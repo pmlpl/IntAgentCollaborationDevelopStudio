@@ -555,48 +555,65 @@ positions:
 
 ```
 IntAgentCollaborationDevelopStudio/
-├── studio.py                   # CLI 主入口
+├── cli/studio.py               # CLI 主入口 (studio 命令)
 ├── config/
 │   ├── agents.yaml             # 系统级：可用 Agent 注册表
 │   ├── models.yaml             # 系统级：可用模型注册表
-│   └── templates/              # 调研存档的项目模板
-│       ├── web-fullstack-vue-fastapi.yaml
-│       └── miniapp-wechat-shop.yaml
+│   ├── platform.yaml           # 中台与 Supervisor 配置
+│   └── templates/              # 调研存档的项目模板 (Phase 3)
 ├── core/
-│   ├── project.py              # studio init / expand
-│   ├── org_chart.py            # 渲染组织架构树
-│   ├── research.py             # web_search 调研 → 生成岗位结构
-│   ├── template.py             # 模板匹配、存档、复用
-│   ├── dispatcher.py           # 收任务 → 发给主管 → 主管拆解
-│   ├── workspace.py            # Git Worktree 创建/清理
-│   ├── review.py               # 审查 → 通过/打回/上报
-│   ├── dependency.py           # 依赖链检测
-│   └── escalate.py             # 上报规则
+│   ├── project.py              # studio init / 项目路径
+│   ├── org/
+│   │   ├── tree_ops.py         # 组织树 CRUD
+│   │   └── org_chart.py        # 渲染组织架构树
+│   ├── dispatch/
+│   │   ├── dispatcher.py       # 收任务 → 发给主管
+│   │   └── task_fsm.py         # 任务状态机
+│   ├── ipc/message_bus.py      # Agent inbox 消息
+│   ├── workspace/worktree.py   # Git Worktree 创建/清理
+│   ├── supervisor/registry.py  # 端口/进程注册 (Python 回退)
+│   └── supervisor_client.py    # Supervisor 客户端
+├── supervisor/                 # Go 调度守护进程 (需 Go 1.22+)
+│   ├── cmd/studio-supervisor/
+│   ├── pkg/lock/               # 端口租约
+│   └── pkg/process/            # 进程注册
 ├── agents/                     # Agent 适配层
-│   ├── base.py                 # 抽象基类
-│   ├── claude_code.py          # subprocess: claude -p "..."
-│   ├── cursor.py
-│   ├── opencode.py
-│   ├── hermes.py
-│   └── codewhale.py
+│   ├── base.py
+│   ├── claude_code.py
+│   └── registry.py
+├── platform/                   # 全局中台 (Phase 2)
+│   ├── memory/
+│   ├── skills/
+│   └── mcp/
 └── projects/                   # 你创建的项目（不可提交到 Git）
-    └── todo-accounting/
-        ├── positions.yaml      # 该项目的工位表
-        ├── tasks/              # 任务日志
+    └── {project-id}/
+        ├── positions.yaml
+        ├── agents/{id}/inbox/  # 消息收件箱
+        ├── tasks/active/
         └── workspaces/         # Git Worktree 工作区
+```
+
+### CLI 用法 (Phase 1)
+
+```bash
+pip install -e ".[dev]"
+studio init --name demo --repo .
+studio task "给首页加个搜索框"
+studio status
+studio review
 ```
 
 ---
 
 ## 技术选型
 
-- **语言**：Python 3.11（你环境已有）
-- **界面**：纯 CLI + 数字选择（/slash 风格），零 UI 依赖
-- **隔离**：Git Worktree
+- **语言**：Python 3.11+（业务层）+ Go 1.22+（Supervisor，可选）
+- **界面**：纯 CLI（argparse），零 UI 依赖
+- **隔离**：Git Worktree + Agent 私有沙箱目录
 - **配置**：YAML
-- **Agent 调用**：subprocess（Cli 命令行调用）
-- **调研**：web_search 工具
-- **存储**：不引入数据库，用 YAML + Git 追踪状态
+- **Agent 调用**：subprocess（CLI 命令行调用）
+- **调度**：Go Supervisor gRPC（或 Python 注册表回退）
+- **存储**：YAML + 文件 inbox，无数据库
 
 ## 开发原则
 

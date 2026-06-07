@@ -1,0 +1,35 @@
+agents:
+  claude-code:
+    name: Claude Code
+    command: claude
+    flags: "-p"
+    strengths: [复杂推理, 自主迭代, 代码审查]
+    works_with: [deepseek-v4-pro, deepseek-v4-flash, qwen, claude-sonnet]
+
+  cursor:
+    name: Cursor
+    command: cursor
+    flags: "--task"
+    strengths: [前端UI, IDE诊断, 组件生成]
+    works_with: [deepseek-v4-pro, deepseek-v4-flash]
+
+  hermes:
+    name: Hermes
+    command: hermes
+    flags: "chat -q"
+    strengths: [持久记忆, 文档, 配置, 脚本]
+    works_with: [deepseek-v4-pro, deepseek-v4-flash, qwen]
+
+  opencode:
+    name: OpenCode
+    command: opencode
+    flags: ""
+    strengths: [代码审查, 重构, 格式化]
+    works_with: [deepseek-v4-pro, deepseek-v4-flash]
+
+  codewhale:
+    name: CodeWhale
+    command: codewhale
+    flags: ""
+    strengths: [轻量脚本, 工具函数]
+    works_with: [deepseek-v4-flash]

@@ -1,0 +1,15 @@
+models:
+  deepseek-v4-pro:
+    name: DeepSeek v4 Pro
+    cost: high
+    use_when: [技术主管, 代码审查, 复杂逻辑]
+
+  deepseek-v4-flash:
+    name: DeepSeek v4 Flash
+    cost: low
+    use_when: [简单CRUD, 文档, 脚本, UI组件]
+
+  qwen:
+    name: Qwen
+    cost: low
+    use_when: [文档, 配置, 轻量任务]

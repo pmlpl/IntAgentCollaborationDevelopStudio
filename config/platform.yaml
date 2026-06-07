@@ -1,0 +1,11 @@
+supervisor:
+  port_range: [41000, 41999]
+  lock_timeout_sec: 30
+  grpc_address: "127.0.0.1:42000"
+  pipe_name: "\\\\.\\pipe\\studio-supervisor"
+memory:
+  enabled: false
+skills:
+  registry_path: platform/skills/registry.yaml
+mcp:
+  gateway_enabled: false

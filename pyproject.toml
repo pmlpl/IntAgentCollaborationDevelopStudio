@@ -1,0 +1,29 @@
+[project]
+name = "int-agent-studio"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "questionary>=2.0",
+    "grpcio>=1.60",
+    "protobuf>=4.25",
+    "grpcio-tools>=1.60",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+studio = "cli.studio:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "agents*", "cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

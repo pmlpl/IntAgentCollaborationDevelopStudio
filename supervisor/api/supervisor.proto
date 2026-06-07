@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package supervisor;
+
+option go_package = "studio/supervisor/api";
+
+service Supervisor {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc AcquirePort(AcquirePortRequest) returns (AcquirePortResponse);
+  rpc ReleasePort(ReleasePortRequest) returns (ReleasePortResponse);
+  rpc SpawnAgent(SpawnAgentRequest) returns (SpawnAgentResponse);
+  rpc KillAgent(KillAgentRequest) returns (KillAgentResponse);
+}
+
+message HealthRequest {}
+message HealthResponse { bool ok = 1; }
+
+message AcquirePortRequest { string owner = 1; }
+message AcquirePortResponse { int32 port = 1; }
+
+message ReleasePortRequest { int32 port = 1; }
+message ReleasePortResponse { bool ok = 1; }
+
+message SpawnAgentRequest {
+  string position_id = 1;
+  string project_id = 2;
+  string worktree_path = 3;
+  repeated string command = 4;
+  map<string, string> env = 5;
+}
+
+message SpawnAgentResponse { int32 pid = 1; }
+
+message KillAgentRequest { string position_id = 1; }
+message KillAgentResponse { bool ok = 1; }

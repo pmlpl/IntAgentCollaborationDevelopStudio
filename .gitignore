@@ -1,0 +1,9 @@
+.studio/
+projects/
+__pycache__/
+*.pyc
+.venv/
+supervisor/bin/
+platform/memory/store/
+*.egg-info/
+.pytest_cache/
