@@ -13,6 +13,7 @@ from agents.runner import (
     run_position_task,
     run_position_task_capture,
 )
+from core.config.agent_policy import agent_allowed, agent_enabled
 from core.dispatch.decompose import (
     MARKER,
     generate_mock_subtasks,
@@ -26,11 +27,15 @@ from core.dispatch.delivery import (
     load_delivery_record,
     parse_manager_review_output,
 )
+from core.dispatch.review_compliance import compliance_for_task
 from core.ipc.message_bus import MessageBus
+from core.logging import get_logger
 from core.org.tree_ops import OrgTree
 from core.platform.skills_client import format_team_skills_line
 from core.project import get_studio_root, load_project
 from core.runtime.state import AgentRuntimeState, write_state
+
+logger = get_logger(__name__)
 
 
 def _build_decompose_prompt(root: Path, project_dir: Path, manager_id: str, description: str) -> str:
@@ -102,6 +107,21 @@ def _finish_with_mock(
     return 0
 
 
+def _agent_can_execute(root: Path, agent_id: str) -> tuple[bool, str]:
+    """检查 Agent 是否可以真正执行任务。
+
+    返回 (can_execute, reason)。
+    can_execute=False 时 reason 说明原因。
+    """
+    if not agent_available(root, agent_id):
+        return False, f"CLI 命令不在 PATH 中"
+    if not agent_enabled(root, agent_id):
+        return False, "已被用户禁用"
+    if not agent_allowed(root, agent_id):
+        return False, "当前 BYOK 策略不允许"
+    return True, "ok"
+
+
 def cmd_decompose(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     project_dir = load_project(root, args.project)
@@ -122,31 +142,19 @@ def cmd_decompose(args: argparse.Namespace) -> int:
 
     force_mock = os.environ.get("STUDIO_MOCK", "").lower() in ("1", "true", "yes") or args.mock
     pos = load_position(project_dir, manager_id)
-    agent_ok = agent_available(root, pos["agent"])
+    agent_id = pos["agent"]
+    can_run, reason = _agent_can_execute(root, agent_id)
 
     if force_mock:
-        subtasks = generate_mock_subtasks(project_dir, description)
-        save_decompose_result(project_dir, manager_id, subtasks)
-        write_state(
-            agent_dir,
-            AgentRuntimeState(status="submitted", progress=100, message="mock 拆解完成"),
+        return _finish_with_mock(
+            project_dir, manager_id, agent_dir, description, reason="强制 mock 模式"
         )
-        print(f"{MARKER}\n{json.dumps(subtasks, ensure_ascii=False, indent=2)}")
-        return 0
 
-    if not agent_ok:
-        subtasks = generate_mock_subtasks(project_dir, description)
-        save_decompose_result(project_dir, manager_id, subtasks)
-        write_state(
-            agent_dir,
-            AgentRuntimeState(
-                status="submitted",
-                progress=100,
-                message=f"Agent {pos['agent']} 不可用，已 mock 拆解",
-            ),
+    if not can_run:
+        logger.info("decompose: agent %s cannot execute: %s, falling back to mock", agent_id, reason)
+        return _finish_with_mock(
+            project_dir, manager_id, agent_dir, description, reason=reason,
         )
-        print(f"{MARKER}\n{json.dumps(subtasks, ensure_ascii=False, indent=2)}")
-        return 0
 
     prompt = _build_decompose_prompt(root, project_dir, manager_id, description)
     try:
@@ -222,7 +230,12 @@ def cmd_work(args: argparse.Namespace) -> int:
 
     force_mock = os.environ.get("STUDIO_MOCK", "").lower() in ("1", "true", "yes") or args.mock
     pos = load_position(project_dir, position_id)
-    use_mock = force_mock or not agent_available(root, pos["agent"])
+    can_run, reason = _agent_can_execute(root, pos["agent"])
+    use_mock = force_mock or not can_run
+
+    if not can_run and not force_mock:
+        logger.info("work: agent %s cannot execute: %s, falling back to mock", pos["agent"], reason)
+
     rc = run_position_task(
         root, project_dir, position_id, description, worktree=worktree, mock=use_mock
     )
@@ -238,7 +251,7 @@ def cmd_work(args: argparse.Namespace) -> int:
     return rc
 
 
-def _build_review_prompt(project_dir: Path, task_id: str) -> str:
+def _build_review_prompt(root: Path, project_dir: Path, task_id: str) -> str:
     """构建主管验收 Worker 交付的提示词。"""
     import yaml
 
@@ -254,6 +267,9 @@ def _build_review_prompt(project_dir: Path, task_id: str) -> str:
     run_output = str(record.get("run_output") or "")[:2000]
     assignee = task.get("assignee") or record.get("assignee") or "worker"
 
+    # 防线三：技能合规检查清单
+    compliance_text = compliance_for_task(root, project_dir, task_id)
+
     return (
         f"你是技术主管，正在验收团队成员 {assignee} 的交付。\n\n"
         f"任务 ID：{task_id}\n"
@@ -262,7 +278,9 @@ def _build_review_prompt(project_dir: Path, task_id: str) -> str:
         f"自动验证命令：{run_cmd}\n"
         f"退出码：{exit_code}\n"
         f"运行输出：\n{run_output or '（无）'}\n\n"
-        f"请根据运行结果与任务目标判断：通过 / 打回修改 / 上报 CEO。\n\n"
+        f"## 技能合规检查清单（审查时必须逐项确认）\n"
+        f"{compliance_text}\n\n"
+        f"请根据运行结果、任务目标与合规清单判断：通过 / 打回修改 / 上报 CEO。\n\n"
         f"## 输出要求（必须严格遵守）\n"
         f"1. 先用中文简要说明审查结论（2-5 行）\n"
         f"2. 然后单独一行输出标记（必须完全一致）：{REVIEW_MARKER}\n"
@@ -304,7 +322,12 @@ def cmd_review(args: argparse.Namespace) -> int:
     record = load_delivery_record(project_dir, task_id) or {}
     force_mock = os.environ.get("STUDIO_MOCK", "").lower() in ("1", "true", "yes") or args.mock
     pos = load_position(project_dir, manager_id)
-    agent_ok = agent_available(root, pos["agent"])
+    can_run, reason = _agent_can_execute(root, pos["agent"])
+    agent_ok = can_run
+
+    if force_mock or not agent_ok:
+        if not agent_ok and not force_mock:
+            logger.info("review: agent %s cannot execute: %s, using rule-based review", pos["agent"], reason)
 
     if force_mock or not agent_ok:
         verdict_data = _rule_based_review(record)
@@ -322,7 +345,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(f"{REVIEW_MARKER}\n{json.dumps(verdict_data, ensure_ascii=False)}")
         return 0
 
-    prompt = _build_review_prompt(project_dir, task_id)
+    prompt = _build_review_prompt(root, project_dir, task_id)
     try:
         rc, output = run_position_task_capture(
             root, project_dir, manager_id, prompt, mock=False

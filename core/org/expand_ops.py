@@ -12,7 +12,7 @@ from core.org.persist import (
 )
 from core.org.tree_ops import OrgTree, OrgTreeError
 from core.project import ORG_TEMPLATES, get_role_catalog
-from core.research.expand import mock_expand_research
+from core.research.expand import expand_research, mock_expand_research
 
 
 def _meta_without_positions(data: dict[str, Any]) -> dict[str, Any]:
@@ -35,10 +35,21 @@ def expand_business_line(
     *,
     template_id: str | None = None,
     role_ids: list[str] | None = None,
+    use_real_research: bool = True,
 ) -> tuple[OrgTree, list[str]]:
-    """开新业务线：调研后追加模板中缺失岗位。"""
+    """开新业务线：调研后追加模板中缺失岗位。
+
+    use_real_research=True 时使用真实调研（需联网+Agent）；
+    False 时使用 mock 离线规则。
+    """
+    from core.project import get_studio_root
+
     data = load_positions_data(project_dir)
-    research = mock_expand_research(description)
+    if use_real_research:
+        research = expand_research(description, get_studio_root(), project_dir=project_dir)
+    else:
+        research = mock_expand_research(description, project_dir)
+    tpl = template_id or str(research["recommended_template"])
     tpl = template_id or str(research["recommended_template"])
     to_add = role_ids if role_ids is not None else list_missing_roles(data, tpl)
     if not to_add:

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from core.org.tree_ops import OrgTree
 from core.platform.skills_client import load_skills_registry
@@ -57,3 +60,28 @@ def build_review_checklist(
 
 def format_review_checklist(lines: list[str]) -> str:
     return "\n".join(lines)
+
+
+def compliance_for_task(
+    root: Path,
+    project_dir: Path,
+    task_id: str,
+) -> str:
+    """为一个待审查任务生成合规检查清单文本，供注入 review prompt。"""
+    task_path = project_dir / "tasks" / "active" / f"{task_id}.yaml"
+    if not task_path.exists():
+        return "（无合规检查项 — 任务文件丢失）"
+
+    pos_path = project_dir / "positions.yaml"
+    if not pos_path.exists():
+        return "（无合规检查项 — 组织文件丢失）"
+
+    task = yaml.safe_load(task_path.read_text(encoding="utf-8"))
+    data = yaml.safe_load(pos_path.read_text(encoding="utf-8"))
+    tree = OrgTree.from_yaml_data(data)
+    assignee = next(
+        (p for p in data.get("positions", []) if p["id"] == task.get("assignee")),
+        {"id": task.get("assignee", ""), "resume": {}},
+    )
+    lines = build_review_checklist(root, tree, task, assignee)
+    return format_review_checklist(lines)

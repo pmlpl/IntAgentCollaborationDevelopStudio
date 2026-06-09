@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Studio TUI (指挥舱)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "cli.studio"],
+      "port": null
+    },
+    {
+      "name": "Studio CLI (命令行模式)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "cli.studio", "--plain", "status"],
+      "port": null
+    },
+    {
+      "name": "Go Supervisor (gRPC 守护进程)",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./supervisor/cmd/studio-supervisor/main.go", "--root", ".", "--addr", "127.0.0.1:42000"],
+      "port": 42000
+    }
+  ]
+}

@@ -14,6 +14,7 @@ from cli.tui.screens.onboarding import OnboardingScreen
 from cli.tui.widgets.org_tree import render_org_tree
 from cli.tui.widgets.orchestration_panel import render_orchestration_panel
 from cli.tui.widgets.task_panel import render_task_panel
+from core.config.agent_policy import agent_enabled
 from core.dispatch.briefing import load_brief, mark_brief_dispatched
 from core.dispatch.dispatcher import get_dispatcher
 from core.dispatch.orchestration_progress import compute_orchestration_progress
@@ -225,14 +226,19 @@ class DashboardScreen(Screen):
         sup = "Supervisor ✓" if SupervisorClient(root).health() else "Supervisor …"
         mgr_pending = len(disp.get_manager_reviews())
         ceo_pending = len(disp.get_pending_reviews())
+
+        # Agent 启用状态摘要
+        agent_status = _build_agent_status(root, positions)
+
         extra = ""
         if mgr_pending:
             extra += f" · 主管审查中 {mgr_pending}"
         if ceo_pending:
             extra += f" · CEO 待批 {ceo_pending} (R)"
-        self.query_one("#status-line", Static).update(
-            f"项目: {self.project_name} · {project_root} · {sup} · N 下达任务{extra}"
+        status = (
+            f"项目: {self.project_name} · {project_root} · {sup}{agent_status} · N 下达任务{extra}"
         )
+        self.query_one("#status-line", Static).update(status)
 
     def action_refresh(self) -> None:
         self._refresh()
@@ -281,3 +287,21 @@ class DashboardScreen(Screen):
 
     def action_quit(self) -> None:
         self.app.exit()
+
+
+def _build_agent_status(root: Path, positions: list[dict]) -> str:
+    """构建 Agent 启用状态摘要文本。"""
+    agent_ids: set[str] = set()
+    for pos in positions:
+        aid = pos.get("agent", "")
+        if aid:
+            agent_ids.add(aid)
+    if not agent_ids:
+        return ""
+    enabled_count = sum(1 for aid in agent_ids if agent_enabled(root, aid))
+    total = len(agent_ids)
+    if enabled_count == total:
+        return f" · Agent [green]{enabled_count}/{total} 已启用[/]"
+    else:
+        disabled = total - enabled_count
+        return f" · Agent [green]{enabled_count}[/]/[red]{disabled} 已禁用[/]（{total}）"

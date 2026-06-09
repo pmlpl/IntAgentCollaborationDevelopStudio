@@ -22,6 +22,7 @@ from core.dispatch.decompose import (
 )
 from core.dispatch.delivery import poll_worker_deliveries, refresh_delivery_verification
 from core.ipc.message_bus import Message, MessageBus
+from core.config.agent_policy import agent_allowed, agent_enabled
 from core.logging import get_logger
 from core.org.tree_ops import OrgTree
 from core.project import get_project_root, load_project
@@ -144,18 +145,33 @@ class Dispatcher:
         spawn_terminals: bool = True,
         mock: bool = False,
     ) -> dict[str, Any]:
-        """创建任务并启动主管拆解（新终端或 mock）。"""
+        """创建任务并启动主管拆解（新终端或 mock）。
+
+        如果 Agent 不可用或被禁用，自动降级为 mock 模式。"""
         task = self.create_task(description)
         manager_id = self._root_manager_id()
         self._update_task_status(task["id"], "in_progress")
 
-        env = {"STUDIO_MOCK": "1"} if mock else {}
-        if mock:
+        # 检测主管 Agent 是否可执行
+        pos = self._position_by_id(manager_id)
+        agent_id = pos.get("agent", "")
+        agent_can_run = (
+            agent_id
+            and agent_enabled(root, agent_id)
+            and agent_allowed(root, agent_id)
+        )
+        auto_mock = mock or not agent_can_run
+        if auto_mock and not mock:
+            reason = "Agent 未安装或被禁用" if not agent_can_run else "手动 mock"
+            logger.info("begin_orchestration: auto-mock (reason=%s, agent=%s)", reason, agent_id)
+
+        env = {"STUDIO_MOCK": "1"} if auto_mock else {}
+        if auto_mock:
             subtasks = generate_mock_subtasks(self.project_dir, description)
             save_decompose_result(self.project_dir, manager_id, subtasks)
         supervisor = SupervisorClient(root)
         supervisor.ensure_running()
-        if spawn_terminals and not mock:
+        if spawn_terminals and not auto_mock:
             pos = self._position_by_id(manager_id)
             orch = _orchestration_settings(root)
             show_manager_terminal = bool(orch.get("spawn_manager_terminal", False))
@@ -383,7 +399,7 @@ class Dispatcher:
         return [t for t in self.get_status() if t.get("status") == "in_review"]
 
     def poll_deliveries(self, root: Path) -> list[dict[str, Any]]:
-        """扫描 Worker 的 DELIVER.json 并触发主管审查流程。"""
+        """扫描 Worker 的 DELIVER.json 并触发主管审查流程 + 自动解除依赖阻塞。"""
         manager_id = self._root_manager_id()
         project_root = self._repo_path(root)
         records = poll_worker_deliveries(
@@ -399,7 +415,43 @@ class Dispatcher:
                 )
         if records or self.get_manager_reviews():
             self.try_run_manager_reviews(root)
+        # 自动解除依赖阻塞
+        self._unblock_ready_tasks()
         return records
+
+    def _unblock_ready_tasks(self) -> list[str]:
+        """检查 blocked 任务，满足依赖则自动解除并通知 Worker。"""
+        ready = get_ready_subtasks(self.project_dir)
+        if not ready:
+            return []
+        unblocked: list[str] = []
+        for task in ready:
+            task_id = str(task.get("id") or "")
+            assignee = str(task.get("assignee") or "")
+            task["status"] = "assigned"
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            task_path = self.tasks_active / f"{task_id}.yaml"
+            task_path.write_text(
+                yaml.dump(task, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+            # 通知 Worker
+            if assignee:
+                bus = MessageBus(self.project_dir / "agents" / assignee / "inbox")
+                bus.deliver(
+                    Message(
+                        id=Message.new_id(),
+                        type="task_assign",
+                        sender="__system__",
+                        recipient=assignee,
+                        task_id=task_id,
+                        payload={"description": task.get("description", "")},
+                        trace=["system", "unblock"],
+                    )
+                )
+            unblocked.append(task_id)
+        if unblocked:
+            logger.info("unblocked %d tasks: %s", len(unblocked), unblocked)
+        return unblocked
 
     def _review_marker(self, task_id: str) -> Path:
         return self.tasks_active / f".review-started-{task_id}.json"

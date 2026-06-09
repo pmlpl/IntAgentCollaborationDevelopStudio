@@ -1,6 +1,11 @@
-# platform/mcp/gateway/config.yaml — MCP Gateway 骨架配置
+# platform/mcp/gateway/config.yaml — MCP Gateway 配置
 enabled: false
-pool_size: 1
+pool_size: 4
 audit_log: true
+# stdio 传输超时（秒）
+stdio_timeout_sec: 300
 allowed_transports:
   - stdio
+  - sse
+# 健康检查间隔（秒），0 表示不检查
+health_check_interval_sec: 60

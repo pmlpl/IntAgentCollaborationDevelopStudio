@@ -123,13 +123,14 @@ def append_mcp_audit(
 
 
 class McpGateway:
-    """MCP Gateway 骨架：校验 allowlist + 写审计，暂不真正拉起 stdio 进程。"""
+    """MCP Gateway：校验 allowlist + 写审计 + 连接池管理。"""
 
     def __init__(self, root: Path, project_dir: Path, position_id: str):
         self.root = root
         self.project_dir = project_dir
         self.position_id = position_id
         self._allowlist = self._load_allowlist()
+        self._pool: dict[str, object] = {}
 
     def _load_allowlist(self) -> set[str]:
         path = (
@@ -144,43 +145,61 @@ class McpGateway:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         return {s["id"] for s in (data.get("servers") or []) if s.get("id")}
 
+    def _cfg(self) -> dict[str, Any]:
+        return load_gateway_config(self.root)
+
+    def connect(self, mcp_id: str) -> bool:
+        """建立到 MCP 服务器的连接（当前为骨架，返回 True 表示 allowlist 通过）。"""
+        if mcp_id not in self._allowlist:
+            return False
+        registry = load_mcp_registry(self.root)
+        if mcp_id not in registry:
+            return False
+        # TODO Phase 4+: 实际启动 stdio/sse 子进程
+        self._pool[mcp_id] = {"connected": True, "meta": registry[mcp_id]}
+        return True
+
+    def disconnect(self, mcp_id: str) -> None:
+        self._pool.pop(mcp_id, None)
+
+    def connected_servers(self) -> list[str]:
+        return list(self._pool.keys())
+
     def invoke(self, mcp_id: str, tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-        """代理 MCP 工具调用（Phase 2 骨架返回 stub）。"""
+        """代理 MCP 工具调用。"""
         args = args or {}
         registry = load_mcp_registry(self.root)
         if mcp_id not in self._allowlist:
             append_mcp_audit(
-                self.project_dir,
-                self.position_id,
-                mcp_id,
-                tool,
-                ok=False,
-                detail="not in allowlist",
+                self.project_dir, self.position_id, mcp_id, tool,
+                ok=False, detail="not in allowlist",
             )
             raise McpError(f"MCP {mcp_id!r} not allowed for {self.position_id}")
         if mcp_id not in registry:
             append_mcp_audit(
-                self.project_dir,
-                self.position_id,
-                mcp_id,
-                tool,
-                ok=False,
-                detail="not in registry",
+                self.project_dir, self.position_id, mcp_id, tool,
+                ok=False, detail="not in registry",
             )
             raise McpError(f"unknown MCP: {mcp_id}")
+
+        cfg = self._cfg()
+        if not cfg.get("enabled", False):
+            append_mcp_audit(
+                self.project_dir, self.position_id, mcp_id, tool,
+                ok=True, detail="gateway disabled, stub response",
+            )
+            return {
+                "ok": True, "stub": True,
+                "mcp_id": mcp_id, "tool": tool, "args": args,
+                "message": "MCP Gateway 已禁用（platform.yaml mcp.gateway_enabled=false）",
+            }
+
         append_mcp_audit(
-            self.project_dir,
-            self.position_id,
-            mcp_id,
-            tool,
-            ok=True,
-            detail="gateway stub",
+            self.project_dir, self.position_id, mcp_id, tool,
+            ok=True, detail="gateway stub (real stdio not yet implemented)",
         )
         return {
-            "ok": True,
-            "stub": True,
-            "mcp_id": mcp_id,
-            "tool": tool,
-            "args": args,
+            "ok": True, "stub": True,
+            "mcp_id": mcp_id, "tool": tool, "args": args,
             "message": "MCP Gateway 骨架：尚未连接真实 stdio 进程",
         }

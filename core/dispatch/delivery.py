@@ -10,6 +10,9 @@ from typing import Any
 import yaml
 
 from core.ipc.message_bus import Message, MessageBus
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 DELIVER_REL = Path(".studio") / "DELIVER.json"
 REVIEW_MARKER = "---STUDIO_REVIEW_JSON---"
@@ -228,6 +231,8 @@ def apply_manager_verdict(
 
     if verdict == "approved":
         task["status"] = "archived"
+        # 尝试合并 worktree
+        _try_merge_worktree(project_dir, task_id, assignee)
         archive = project_dir / "tasks" / "archive" / f"{task_id}.yaml"
         archive.parent.mkdir(parents=True, exist_ok=True)
         task["review_comment"] = comment
@@ -270,6 +275,52 @@ def apply_manager_verdict(
             )
         )
     return task
+
+
+def _try_merge_worktree(project_dir: Path, task_id: str, assignee: str) -> None:
+    """approved 后尝试将 worktree 合并回主分支。失败则通知 CEO。"""
+    import yaml as _yaml
+
+    from core.workspace.worktree import WorktreeManager
+
+    ws_root = project_dir / "workspaces"
+    repo_yaml = project_dir / "shared" / "repo.yaml"
+    if not repo_yaml.exists() or not ws_root.exists():
+        return
+    meta = _yaml.safe_load(repo_yaml.read_text(encoding="utf-8"))
+    repo_path = Path(meta.get("repo_path", ""))
+    if not repo_path.exists():
+        return
+
+    candidates = [d for d in ws_root.iterdir() if d.is_dir() and d.name.startswith(task_id)]
+    if not candidates:
+        return
+
+    mgr = WorktreeManager(repo_path, ws_root)
+    for wt in candidates:
+        try:
+            result = mgr.merge(wt.name)
+            if result["merged"]:
+                logger.info("merged worktree %s for task %s", wt.name, task_id)
+            else:
+                ceo_bus = MessageBus(project_dir / "agents" / "__ceo__" / "inbox")
+                conflicts = result.get("conflicts", [])
+                ceo_bus.deliver(
+                    Message(
+                        id=Message.new_id(),
+                        type="ceo_review",
+                        sender="system",
+                        recipient="__ceo__",
+                        task_id=task_id,
+                        payload={
+                            "summary": f"合并冲突: {wt.name} → {conflicts}",
+                            "detail": f"分支 {result.get('branch')} 合并失败，需人工处理",
+                        },
+                        trace=["system"],
+                    )
+                )
+        except Exception as exc:
+            logger.warning("worktree merge failed for %s: %s", wt.name, exc)
 
 
 def parse_manager_review_output(stdout: str) -> dict[str, Any] | None:

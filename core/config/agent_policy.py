@@ -13,6 +13,11 @@ from agents.runner import agent_available
 POLICY_ALL = "all"
 POLICY_BYOK_ONLY = "byok_only"
 
+# agent_enabled 结果缓存，避免每次刷新 TUI 都扫 PATH
+_enabled_cache: dict[str, dict[str, bool]] = {}
+_enabled_cache_time: dict[str, float] = {}
+_CACHE_TTL = 30.0  # 秒
+
 
 def _load_platform_agents_section(root: Path) -> dict[str, Any]:
     path = root / "config" / "platform.yaml"
@@ -46,17 +51,47 @@ def agent_enabled(root: Path, agent_id: str) -> bool:
 
     auto_detect=true 时：已安装的 Agent 默认启用，未安装的默认禁用。
     显式加入 disabled 列表的 Agent 无论如何都被禁用。
+
+    结果会缓存 30 秒，避免每次 TUI 刷新都扫 PATH（agent_available 会调 which）。
     """
+    import time as _time
+
+    root_str = str(root)
+    now = _time.time()
+    if root_str in _enabled_cache and (now - _enabled_cache_time.get(root_str, 0)) < _CACHE_TTL:
+        return _enabled_cache[root_str].get(agent_id, True)
+
+    agent_dict = _build_enabled_dict(root)
+    _enabled_cache[root_str] = agent_dict
+    _enabled_cache_time[root_str] = now
+    return agent_dict.get(agent_id, True)
+
+
+def _build_enabled_dict(root: Path) -> dict[str, bool]:
+    """一次性构建所有 Agent 的启用状态，避免逐个调 agent_available。"""
     section = _load_platform_agents_section(root)
-    disabled: list[str] = section.get("disabled") or []
-    if agent_id in disabled:
-        return False
-
+    disabled: list[str] = list(section.get("disabled") or [])
     auto_detect = section.get("auto_detect", True)
-    if auto_detect:
-        return agent_available(root, agent_id)
+    agents = load_agents_config(root).get("agents", {})
+    result: dict[str, bool] = {}
+    for aid in agents:
+        if aid in disabled:
+            result[aid] = False
+        elif auto_detect:
+            result[aid] = agent_available(root, aid)
+        else:
+            result[aid] = True
+    return result
 
-    return True
+
+def invalidate_enabled_cache(root: str | None = None) -> None:
+    """使启用状态缓存失效（禁用/启用操作后调用）。"""
+    if root is not None:
+        _enabled_cache.pop(root, None)
+        _enabled_cache_time.pop(root, None)
+    else:
+        _enabled_cache.clear()
+        _enabled_cache_time.clear()
 
 
 def agent_auto_detect(root: Path) -> dict[str, bool]:
@@ -89,6 +124,7 @@ def set_agent_enabled(root: Path, agent_id: str, enabled: bool) -> bool:
 
     section["disabled"] = disabled
     _save_platform_agents_section(root, section)
+    invalidate_enabled_cache(str(root))  # 立即生效，无需等 30s TTL
     return enabled
 
 

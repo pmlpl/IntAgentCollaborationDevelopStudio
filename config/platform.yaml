@@ -1,51 +1,37 @@
-# config/platform.yaml — 中台全局配置
 memory:
-  backend: file
+  backend: sqlite
   store_dir: platform/memory/store
-
 mcp:
   gateway_enabled: false
   audit_relative: agents/{position_id}/logs/mcp-audit.log
-
 rbac:
   inherit_parent_grants: true
-
 review:
   skills_compliance: true
-
-# Agent 选用策略（资金有限、只用第三方/BYOK 模型时保持 byok_only）
-# disabled: 显式禁用的 Agent ID 列表（不会启动，自动走 mock）
-# auto_detect: true 时自动检测已安装 Agent 并启用，未安装的默认标记为不可用
 agents:
   policy: byok_only
   default: opencode
   disabled: []
   auto_detect: true
   fallback_order:
-    - opencode
-    - hermes
-    - aider
-    - goose
-
-# 编排完成后 Worker 终端行为
+  - opencode
+  - hermes
+  - aider
+  - goose
 orchestration:
   worker_terminal_agent: opencode
   use_position_agent: true
   spawn_manager_terminal: false
-  # Agent 未按格式输出时的兜底：mock=按岗位规则自动拆任务 | fail=报错停住
   decompose_fallback: mock
-
-# 项目调研（开公司向导 / 扩建）
-# mode: agent=Agent CLI | offline=仅联网+规则（不调 LLM）
 research:
   mode: agent
   agent: opencode
   search_providers:
-    - github
-    - bing
-    - duckduckgo
+  - github
+  - bing
+  - duckduckgo
   search_bing_host: cn.bing.com
   search_queries:
-    - "{desc} 技术栈 开发方案"
-    - "{desc} 类似产品 开源项目"
-    - "{desc} similar open source github"
+  - '{desc} 技术栈 开发方案'
+  - '{desc} 类似产品 开源项目'
+  - '{desc} similar open source github'
