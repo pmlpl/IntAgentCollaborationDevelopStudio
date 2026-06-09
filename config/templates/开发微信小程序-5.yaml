@@ -1,0 +1,9 @@
+id: 开发微信小程序-5
+description: 开发微信小程序
+org_template: web-miniprogram
+summary: 微信小程序开发需使用微信官方提供的技术栈（WXML/WXSS/JS）。推荐使用 web-miniprogram 模板，因为项目目标是开发微信小程序。不确定项：具体业务场景（电商/工具/服务类）会影响功能模块设计；是否需要接入云开发或自建后端服务。
+keywords:
+- 微信开发者工具 (WeChat DevTools)
+- WXML + WXSS (小程序标记语言)
+- JavaScript/TypeScript
+- Uni-app (可选跨平台框架)

@@ -2,7 +2,7 @@
 
 多 Agent 协作开发管理平台。
 
-你（CEO）下达命令，系统自动调研项目需要什么岗位、生成公司架构。Agent（Claude Code / Hermes / Cursor / OpenCode / CodeWhale）在 Git Worktree 隔离环境中并行工作，主管 Agent 拆解任务、审查代码、自动合并，只在上报例外情况时找你。
+你（CEO）下达命令，系统自动调研项目需要什么岗位、生成公司架构。Agent（Claude Code / Hermes / OpenCode）在 Git Worktree 隔离环境中并行工作，主管 Agent 拆解任务、审查代码、自动合并，只在上报例外情况时找你。
 
 ## 核心理念
 
@@ -59,13 +59,13 @@ studio init
 #   确认后，逐岗位配置：
 
 #   技术主管
-#     Agent:  [1] Claude Code  [2] Hermes  [3] Cursor  [4] OpenCode  [5] CodeWhale
+#     Agent:  [1] Claude Code  [2] Hermes  [3] OpenCode
 #     > 1
 #     模型:   [1] deepseek-v4-pro  [2] deepseek-v4-flash  [3] qwen
 #     > 1
 #     起名:   老王
 
-#   前端开发 → 小红 / Cursor / v4 Flash
+#   前端开发 → 小红 / Claude Code / v4 Flash
 #   后端开发 → 大壮 / Claude Code / v4 Pro
 #   测试审查 → 小严 / OpenCode / v4 Flash
 
@@ -309,7 +309,7 @@ def run(agent_config, task, worktree):
   技能：fastapi-expert, python-async
   MCP：postgres-mcp
   擅长：REST API, 数据库, 认证
-- 小红 / 前端开发（Cursor）
+- 小红 / 前端开发（Claude Code）
   技能：vue-debug
   擅长：Vue3组件, Pinia, Tailwind CSS
 - 小严 / 测试审查（OpenCode）
@@ -407,15 +407,8 @@ agents:
     name: Claude Code
     command: claude
     flags: "-p"
-    strengths: [复杂推理, 自主迭代, 代码审查]
+    strengths: [复杂推理, 自主迭代, 代码审查, 前端UI]
     works_with: [deepseek-v4-pro, deepseek-v4-flash, qwen, claude-sonnet]
-
-  cursor:
-    name: Cursor
-    command: cursor
-    flags: "--task"
-    strengths: [前端UI, IDE诊断, 组件生成]
-    works_with: [deepseek-v4-pro, deepseek-v4-flash]
 
   hermes:
     name: Hermes
@@ -430,13 +423,6 @@ agents:
     flags: ""
     strengths: [代码审查, 重构, 格式化]
     works_with: [deepseek-v4-pro, deepseek-v4-flash]
-
-  codewhale:
-    name: CodeWhale
-    command: codewhale
-    flags: ""
-    strengths: [轻量脚本, 工具函数]
-    works_with: [deepseek-v4-flash]
 ```
 
 ### models.yaml（系统级）
@@ -481,7 +467,7 @@ positions:
     name: 小红
     title: 前端开发
     parent: laowang
-    agent: cursor
+    agent: claude-code
     model: deepseek-v4-flash
     resume:
       strengths: [Vue3组件, Pinia状态管理, Tailwind CSS]
@@ -532,7 +518,7 @@ positions:
     parent: tech-lead
     waits_on: []
     does: Vue3组件、状态管理、API对接、样式
-    recommend: { agent: cursor, model: deepseek-v4-flash }
+    recommend: { agent: claude-code, model: deepseek-v4-flash }
 
   - id: backend
     title: 后端开发
@@ -593,12 +579,15 @@ IntAgentCollaborationDevelopStudio/
         └── workspaces/         # Git Worktree 工作区
 ```
 
-### CLI 用法 (Phase 1)
+### CLI 用法
+
+**推荐：** 直接运行 `studio` 进入 Textual 指挥舱（开公司向导 + 进度面板 + 自动弹出 Agent 终端）。
 
 ```bash
 pip install -e ".[dev]"
+studio                    # Textual 指挥舱
+studio task "..." --orchestrate --mock   # plain 模式完整编排
 studio init --name demo --repo .
-studio task "给首页加个搜索框"
 studio status
 studio review
 ```

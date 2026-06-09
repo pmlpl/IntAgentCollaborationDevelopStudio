@@ -1,0 +1,11 @@
+id: miniapp-wechat-shop
+description: 微信小程序商城
+org_template: web-miniprogram
+keywords:
+  - 小程序
+  - 微信
+  - 商城
+  - uni
+  - miniprogram
+summary: |
+  小程序项目建议：主管 + Web 前端 + 后端 + 测试 + 小程序专岗。

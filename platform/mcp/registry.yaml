@@ -1,0 +1,17 @@
+# platform/mcp/registry.yaml — 全局 MCP 服务注册表
+servers:
+  - id: filesystem-mcp
+    name: 文件系统 MCP
+    description: 受控目录读写（经 Gateway 代理）
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "{allowed_path}"]
+    tags: [filesystem, dev]
+
+  - id: postgres-mcp
+    name: PostgreSQL MCP
+    description: 只读 SQL 查询与 schema 浏览
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-postgres", "{database_url}"]
+    tags: [database, backend]

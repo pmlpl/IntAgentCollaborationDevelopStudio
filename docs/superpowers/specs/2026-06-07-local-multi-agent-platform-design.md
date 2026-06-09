@@ -10,7 +10,7 @@
 
 IntAgentCollaborationDevelopStudio 是一款 **CEO 模式本地多 Agent 编排平台**。用户下达业务目标，系统调研并生成组织树，主管 Agent 拆解任务，Worker 在 Git Worktree 隔离环境中并行开发，审查通过后合并代码。
 
-**Agent 运行时形态：** 混合编排器——平台内置 Go Supervisor + Python 业务层；Agent Worker 为外部 CLI（Claude Code / Cursor / Hermes / OpenCode / CodeWhale），通过 subprocess 适配层调用。
+**Agent 运行时形态：** 混合编排器——平台内置 Go Supervisor + Python 业务层；Agent Worker 为外部终端 CLI（Claude Code / Hermes / OpenCode），通过 subprocess 适配层调用。Cursor 等 IDE 用于人工编辑与本平台开发，不作为编排 Worker。
 
 ### 1.1 与 AGENTS.md 的关系
 
@@ -78,7 +78,7 @@ IntAgentCollaborationDevelopStudio/          # 唯一根目录
 │
 ├── agents/                                  # 【Agent 适配层】
 │   ├── base.py
-│   ├── claude_code.py, cursor.py, hermes.py, opencode.py, codewhale.py
+│   ├── claude_code.py, hermes.py, opencode.py
 │
 ├── cli/
 │   └── studio.py                            # CLI 主入口

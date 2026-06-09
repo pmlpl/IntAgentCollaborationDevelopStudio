@@ -1,0 +1,6 @@
+# platform/mcp/gateway/config.yaml — MCP Gateway 骨架配置
+enabled: false
+pool_size: 1
+audit_log: true
+allowed_transports:
+  - stdio

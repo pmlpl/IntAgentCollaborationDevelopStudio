@@ -1,0 +1,13 @@
+id: web-fullstack-vue-fastapi
+description: Vue3 + FastAPI 全栈 Web 应用
+org_template: web-fullstack
+keywords:
+  - vue
+  - vue3
+  - fastapi
+  - 全栈
+  - web
+  - 记账
+  - 博客
+summary: |
+  Web 全栈典型编制：技术主管统筹，前端负责 Vue 界面，后端负责 FastAPI API，测试负责质量保障。

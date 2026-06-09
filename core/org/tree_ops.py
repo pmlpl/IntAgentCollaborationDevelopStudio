@@ -83,6 +83,40 @@ class OrgTree:
         self._positions[node_id]["parent"] = new_parent_id
         self._validate()
 
+    def children(self, node_id: str) -> list[str]:
+        """直接下级岗位 id。"""
+        return [pid for pid, pos in self._positions.items() if pos.get("parent") == node_id]
+
+    def get(self, node_id: str) -> dict[str, Any]:
+        if node_id not in self._positions:
+            raise OrgTreeError(f"unknown node {node_id!r}")
+        return deepcopy(self._positions[node_id])
+
+    def remove_node(
+        self,
+        node_id: str,
+        *,
+        strategy: str = "reassign_to_parent",
+    ) -> None:
+        """删除岗位；子节点按 strategy 处理。"""
+        if node_id not in self._positions:
+            raise OrgTreeError(f"unknown node {node_id!r}")
+        node = self._positions[node_id]
+        parent = node.get("parent")
+        child_ids = self.children(node_id)
+
+        if strategy == "archive":
+            if child_ids:
+                raise OrgTreeError(f"cannot archive {node_id!r}: has children")
+        elif strategy in ("reassign_to_parent", "promote_children"):
+            for cid in child_ids:
+                self._positions[cid]["parent"] = parent
+        else:
+            raise OrgTreeError(f"unknown remove strategy: {strategy!r}")
+
+        del self._positions[node_id]
+        self._validate()
+
     def root_managers(self) -> list[str]:
         """返回 parent 为 null 且 is_manager 为 true 的节点 id。"""
         return [

@@ -8,8 +8,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -50,16 +52,47 @@ func (s *supervisorService) SpawnAgent(_ context.Context, req *pb.SpawnAgentRequ
 	if s.procs.IsAlive(req.GetPositionId()) {
 		return nil, fmt.Errorf("position %s already has active worker", req.GetPositionId())
 	}
-	// Phase 1: 仅注册占位 PID，实际 spawn 由 Python adapter 完成
-	pid := os.Getpid()
+	cmdArgs := req.GetCommand()
+	if len(cmdArgs) == 0 {
+		return nil, fmt.Errorf("empty command for position %s", req.GetPositionId())
+	}
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	if wd := req.GetWorktreePath(); wd != "" {
+		cmd.Dir = wd
+	}
+	cmd.Env = os.Environ()
+	for k, v := range req.GetEnv() {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+	if runtime.GOOS == "windows" {
+		// CREATE_NEW_CONSOLE = 0x00000010
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x10}
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("spawn %s: %w", req.GetPositionId(), err)
+	}
+
 	started := time.Now().UTC().Format(time.RFC3339)
+	pid := cmd.Process.Pid
 	if err := s.procs.Register(req.GetPositionId(), pid, started); err != nil {
+		_ = cmd.Process.Kill()
 		return nil, err
 	}
+	go func() {
+		_ = cmd.Wait()
+	}()
 	return &pb.SpawnAgentResponse{Pid: int32(pid)}, nil
 }
 
 func (s *supervisorService) KillAgent(_ context.Context, req *pb.KillAgentRequest) (*pb.KillAgentResponse, error) {
+	entry, ok := s.procs.Get(req.GetPositionId())
+	if ok {
+		if proc, err := os.FindProcess(entry.PID); err == nil {
+			_ = proc.Kill()
+		}
+	}
 	if err := s.procs.Unregister(req.GetPositionId()); err != nil {
 		return nil, err
 	}

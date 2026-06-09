@@ -8,6 +8,8 @@ dependencies = [
     "grpcio>=1.60",
     "protobuf>=4.25",
     "grpcio-tools>=1.60",
+    "textual>=0.79",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]

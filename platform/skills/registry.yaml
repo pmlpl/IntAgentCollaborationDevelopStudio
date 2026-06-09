@@ -1,1 +1,19 @@
-skills: []
+# platform/skills/registry.yaml — 全局技能注册表
+skills:
+  - id: fastapi-expert
+    name: FastAPI 专家
+    description: REST API 设计、Pydantic 模型、OpenAPI 规范
+    package: packages/fastapi-expert
+    tags: [backend, python, fastapi]
+
+  - id: python-async
+    name: Python 异步
+    description: asyncio / asyncpg 异步数据库访问模式
+    package: packages/python-async
+    tags: [backend, python]
+
+  - id: vue-debug
+    name: Vue 调试与规范
+    description: Vue3 组件结构、Pinia、Tailwind 代码风格
+    package: packages/vue-debug
+    tags: [frontend, vue]

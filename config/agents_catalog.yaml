@@ -1,0 +1,95 @@
+# config/agents_catalog.yaml — 热门 Agent 目录（展示 / 检测 / 手动打开 TUI）
+# 与 agents.yaml 通过 agent_id 关联；agent_id 为空表示仅展示安装说明，Studio 暂不支持一键打开
+catalog:
+  - id: claude-code
+    agent_id: claude-code
+    name: Claude Code
+    tagline: Anthropic 官方终端 Agent，复杂推理与任务拆解
+    command: claude
+    byok: false
+    install_cmd: npm install -g @anthropic-ai/claude-code
+    apikey_hint: 运行 claude 按提示登录；自配网关见 docs/INSTALL-AGENTS.md
+    rank: 10
+
+  - id: opencode
+    agent_id: opencode
+    name: OpenCode
+    tagline: 75+ 模型提供商，DeepSeek / Ollama / OpenAI 兼容
+    command: opencode
+    byok: true
+    install_cmd: npm install -g opencode-ai
+    apikey_hint: 运行 opencode 在 TUI 内配置 provider 与 API Key
+    rank: 20
+
+  - id: codex
+    agent_id: codex
+    name: OpenAI Codex
+    tagline: OpenAI 官方编码 Agent，高吞吐实现
+    command: codex
+    byok: false
+    install_cmd: npm install -g @openai/codex
+    apikey_hint: 需 ChatGPT Plus；运行 codex 按提示登录 OpenAI
+    rank: 30
+
+  - id: gemini-cli
+    agent_id: gemini-cli
+    name: Gemini CLI
+    tagline: Google 终端 Agent，前端与多模态
+    command: gemini
+    byok: false
+    install_cmd: npm install -g @google/gemini-cli
+    apikey_hint: 运行 gemini 登录 Google 账号或设置 GEMINI_API_KEY
+    rank: 40
+
+  - id: hermes
+    agent_id: hermes
+    name: Hermes
+    tagline: 持久记忆与文档，适合后端与小程序
+    command: hermes
+    byok: true
+    install_cmd: pip install hermes-agent
+    apikey_hint: 编辑 Hermes config.yaml 配置 provider 与 API Key
+    rank: 50
+
+  - id: aider
+    agent_id: aider
+    name: Aider
+    tagline: Git 原生结对编程，任意 API / Ollama
+    command: aider
+    byok: true
+    install_cmd: pip install aider-chat
+    apikey_hint: 设置 DEEPSEEK_API_KEY 等，或 aider --model ollama/模型名
+    rank: 60
+
+  - id: goose
+    agent_id: goose
+    name: Goose
+    tagline: Block 开源 Agent，脚手架与 MCP 工作流
+    command: goose
+    byok: true
+    install_cmd: 见 docs/INSTALL-AGENTS.md Goose 章节（Windows 二进制或 cargo install）
+    apikey_hint: goose configure 选择 provider 并填入 API Key
+    rank: 70
+
+  - id: github-copilot-cli
+    agent_id: null
+    name: GitHub Copilot CLI
+    tagline: GitHub 终端 Agent（独立 copilot 命令；新版 gh 已内置 gh copilot 入口）
+    command: copilot
+    byok: false
+    install_cmd: npm install -g @github/copilot
+    apikey_hint: 需 Copilot 订阅；gh auth login 后运行 copilot 或 gh copilot
+    rank: 80
+
+  - id: amazon-q-cli
+    agent_id: null
+    name: Amazon Q Developer CLI
+    tagline: AWS 终端编码助手（官方 Q CLI 已迁移为 Kiro CLI，Windows 可原生安装）
+    command: kiro-cli
+    byok: false
+    install_cmd: powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://cli.kiro.dev/install.ps1' | iex"
+    install_probe_paths:
+      - "%LocalAppData%\\Kiro-Cli\\kiro-cli.exe"
+      - "%ProgramFiles%\\Kiro-Cli\\kiro-cli.exe"
+    apikey_hint: 安装后运行 kiro-cli login；交互会话用 kiro-cli
+    rank: 90

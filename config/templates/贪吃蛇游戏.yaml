@@ -1,0 +1,12 @@
+id: 贪吃蛇游戏
+description: 贪吃蛇游戏
+org_template: web-fullstack
+summary: 贪吃蛇是经典休闲游戏，实现路径以纯前端 Canvas 渲染为主。平台已有 9 个「贪吃蛇小游戏」存档模板（均推荐 web-fullstack），当前项目与它们高度相似。推荐主选技术栈：HTML5
+  Canvas + TypeScript + Vue3 前端，FastAPI + SQLite 后端（支持排行榜与存档），适合展示平台全栈多智能体协作能力。若仅需单机版，可降级为
+  minimal（纯前端）模板。不确定项：用户是否需要多人联机功能（如需则加 WebSocket），以及目标平台是纯 Web 还是需要移动端打包。
+keywords:
+- HTML5 Canvas
+- TypeScript
+- Vue 3
+- FastAPI
+- SQLite

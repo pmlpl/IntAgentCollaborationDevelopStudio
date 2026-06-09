@@ -1,0 +1,13 @@
+id: 开发微信小程序-3
+description: 开发微信小程序
+org_template: web-miniprogram
+summary: 开发微信小程序，推荐主选微信原生框架+TypeScript+微信云开发，理由：官方支持最完善、免运维后端、天然打通微信鉴权体系。若未来需跨平台发布，可切换到Taro或uni-app。平台已有5个相似存档，匹配度最高92%，推荐复用web-miniprogram组织模板，建议最小团队2-3人。主要不确定项：业务域未定、跨平台需求未知、后端复杂度不明确、团队技术栈偏好未知。
+keywords:
+- 微信原生框架(WXML/WXSS/WXS)
+- TypeScript
+- 微信云开发(CloudBase)
+- WeUI
+- MobX
+- miniprogram-ci
+- Node.js云函数
+- 云开发文档数据库

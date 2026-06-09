@@ -1,0 +1,11 @@
+id: 贪吃蛇
+description: 贪吃蛇
+org_template: web-fullstack
+summary: 本项目属于休闲游戏域。虽然经典版本简单，但参考市场主流（如 Snake.io），用户很可能需要实时多人竞技功能。推荐 web-fullstack
+  模板以支持 WebSocket 实时通信和复杂状态管理；若仅需单机或微信小游戏，可考虑复用现有模板或使用 Uni-app。需确认用户对多人对战的具体需求深度。
+keywords:
+- React
+- TypeScript
+- Node.js
+- WebSocket
+- Redis
