@@ -8,3 +8,12 @@ platform/memory/store/
 *.egg-info/
 .pytest_cache/
 .aider*
+# 项目运行生成的模板，非平台源码
+config/templates/*-[0-9]*.yaml
+config/templates/做一个*.yaml
+config/templates/贪吃蛇*.yaml
+config/templates/开发*.yaml
+config/templates/岗位推荐.yaml
+config/templates/打鼓游戏.yaml
+config/templates/记账.yaml
+config/templates/通过用户*.yaml

@@ -20,7 +20,11 @@ from core.dispatch.decompose import (
     load_decompose_result,
     save_decompose_result,
 )
-from core.dispatch.delivery import poll_worker_deliveries, refresh_delivery_verification
+from core.dispatch.delivery import (
+    generate_mock_delivery,
+    poll_worker_deliveries,
+    refresh_delivery_verification,
+)
 from core.ipc.message_bus import Message, MessageBus
 from core.config.agent_policy import agent_allowed, agent_enabled
 from core.logging import get_logger
@@ -272,7 +276,8 @@ class Dispatcher:
         children = [
             t for t in self.get_status() if t.get("parent_id") == root_task_id
         ]
-        if not children:
+        # 仅在首次编排且无子任务时 apply，避免子任务全归档后重复创建
+        if not children and not marker.exists():
             apply_subtasks(
                 self.project_dir,
                 root_task_id,
@@ -288,10 +293,118 @@ class Dispatcher:
             )
 
         # 每次轮询都尝试 spawn 尚未启动的 Worker（此前 marker 过早写入会导致永不重试）
-        if spawn_terminals:
+        # mock 模式：无视 spawn_terminals，始终同步执行 Worker+审查闭环
+        if spawn_terminals or mock:
             self._spawn_ready_workers(root, root_task_id, mock=mock)
 
         return True
+
+    def _run_mock_workers_and_review(self, root: Path, root_task_id: str) -> None:
+        """Mock 模式：同步模拟 Worker 执行 → 交付 → 审查 → 归档。
+
+        为每个 assigned Worker 在独立的 mock worktree 目录写入 DELIVER.json，
+        通过 poll_worker_deliveries 统一扫描处理，再行规则审查，
+        完成全流程闭环。
+        """
+        from core.dispatch.delivery import (
+            DELIVER_REL,
+            apply_manager_verdict,
+            find_deliver_files,
+            load_delivery_record,
+            load_deliver_payload,
+            process_worker_delivery,
+        )
+
+        manager_id = self._root_manager_id()
+        project_root = self._repo_path(root) or self.project_dir
+
+        # 收集 assigned Worker 并构建任务索引
+        tasks_by_id: dict[str, dict] = {}
+        assigned_workers: list[dict] = []
+        for p in sorted(self.tasks_active.glob("*.yaml")):
+            task = yaml.safe_load(p.read_text(encoding="utf-8"))
+            tid = str(task.get("id") or "")
+            if tid:
+                tasks_by_id[tid] = task
+            if task.get("parent_id") != root_task_id:
+                continue
+            if task.get("status") == "assigned":
+                assigned_workers.append(task)
+
+        if not assigned_workers:
+            logger.warning("mock workers: no assigned workers found for %s", root_task_id)
+            return
+
+        # 为每个 Worker 在独立目录写入 DELIVER.json（避免路径冲突）
+        for task in assigned_workers:
+            sub_id = str(task.get("id") or "")
+            assignee = str(task.get("assignee") or "")
+            description = str(task.get("description") or "")
+
+            # 每个 Worker 独立的 mock worktree
+            mock_wt = self.project_dir / "workspaces" / f"{sub_id}-mock"
+            mock_wt.mkdir(parents=True, exist_ok=True)
+            studio_dir = mock_wt / ".studio"
+            studio_dir.mkdir(parents=True, exist_ok=True)
+
+            deliver_path = studio_dir / "DELIVER.json"
+            from core.dispatch.delivery import generate_mock_delivery as _gen_deliver
+            deliver = _gen_deliver(
+                self.project_dir, sub_id, assignee, description
+            )
+            deliver_path.write_text(
+                json.dumps(deliver, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("mock worker: %s (%s) wrote DELIVER.json", sub_id, assignee)
+
+        # 扫描并处理所有交付（复用统一的 poll → process → review 链路）
+        for deliver_path in find_deliver_files(self.project_dir, project_root):
+            if deliver_path.name.endswith(".processed"):
+                continue
+            deliver = load_deliver_payload(deliver_path)
+            if not deliver:
+                continue
+            task_id = str(deliver.get("task_id") or "")
+            task = tasks_by_id.get(task_id)
+            if not task:
+                continue
+            if task.get("status") in ("archived", "in_review", "escalated"):
+                continue
+            worktree = deliver_path.parent.parent  # .studio/DELIVER.json → parent=.studio → parent=worktree
+            process_worker_delivery(
+                self.project_dir, task, deliver, worktree, manager_id=manager_id
+            )
+            # 标记已处理
+            done = deliver_path.with_name(deliver_path.name + ".processed")
+            if not done.exists():
+                deliver_path.rename(done)
+
+            # 规则审查（同步 inline，不 spawn 后台进程）
+            record = load_delivery_record(self.project_dir, task_id) or {}
+            exit_code = record.get("exit_code", -1)
+            run_ok = record.get("run_output", "").startswith("Worker") if exit_code == 0 else False
+            verdict = "approved" if (exit_code == 0 or run_ok) else "rejected"
+            comment = (
+                "[mock] 自动验证通过" if verdict == "approved"
+                else f"[mock] 验证未通过 (exit={exit_code})"
+            )
+            logger.info("mock review: %s → %s (%s)", task_id, verdict, comment)
+            apply_manager_verdict(
+                self.project_dir, task_id, verdict, comment=comment,
+                manager_id=manager_id,
+            )
+
+        # 检查依赖后继续派发被解除阻塞的任务
+        self._unblock_ready_tasks()
+
+        # 若 active 中不再有该编排的子任务，根任务归档
+        remaining_children = [
+            p for p in self.tasks_active.glob("*.yaml")
+            if yaml.safe_load(p.read_text(encoding="utf-8")).get("parent_id") == root_task_id
+        ]
+        if not remaining_children:
+            self._update_task_status(root_task_id, "archived")
 
     def _remove_spawned_worker_id(self, root_task_id: str, subtask_id: str) -> None:
         """spawn 失败时撤销记录，便于下次轮询重试。"""
@@ -311,8 +424,12 @@ class Dispatcher:
     def _spawn_ready_workers(
         self, root: Path, root_task_id: str, *, mock: bool = False
     ) -> None:
-        """为 assigned 状态的 worker 创建 worktree 并 spawn 交互式 Agent 终端。"""
+        """为 assigned 状态的 worker 创建 worktree 并 spawn 交互式 Agent 终端。
+
+        mock 模式：同步执行 Worker → 交付 → 审查 → 归档，跑完全流程闭环。
+        """
         if mock:
+            self._run_mock_workers_and_review(root, root_task_id)
             return
 
         # 速率限制：距上次尝试 2 秒内不重复执行，避免 Dashboard 高频触发

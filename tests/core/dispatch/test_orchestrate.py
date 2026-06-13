@@ -32,5 +32,8 @@ def test_begin_and_complete_orchestration(tmp_path: Path):
     assert disp.try_complete_orchestration(tmp_path, task["id"], spawn_terminals=False)
     marker = project / "tasks" / "active" / f".orchestrated-{task['id']}.json"
     assert marker.exists()
-    tasks = disp.get_status()
-    assert any(t.get("parent_id") == task["id"] for t in tasks)
+    # v0.2.0: mock 模式跑完全流程，子任务归档到 archive/，根任务也归档
+    archive_dir = project / "tasks" / "archive"
+    assert archive_dir.is_dir()
+    archived_children = list(archive_dir.glob(f"{task['id']}-*.yaml"))
+    assert len(archived_children) >= 1, f"expected archived children in {archive_dir}"

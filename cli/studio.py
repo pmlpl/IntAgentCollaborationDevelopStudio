@@ -69,13 +69,27 @@ def cmd_task(args: argparse.Namespace) -> int:
         task = disp.begin_orchestration(
             root, args.description, spawn_terminals=not args.no_spawn, mock=args.mock
         )
-        disp.try_complete_orchestration(
-            root, task["id"], spawn_terminals=not args.no_spawn
-        )
+        # CLI 模式轮询：等待主管拆解完成（mock 瞬间完成，真实 Agent 最长等 120s）
+        import time
+
+        max_wait = 5 if args.mock else 120
+        interval = 0.5 if args.mock else 4
+        waited = 0.0
+        while waited < max_wait:
+            if disp.try_complete_orchestration(
+                root, task["id"], spawn_terminals=not args.no_spawn
+            ):
+                print(f"  编排完成 — {disp.get_status()[0]['status'] if disp.get_status() else 'done'}")
+                break
+            time.sleep(interval)
+            waited += interval
+        else:
+            print(f"  ⚠ 编排未在 {max_wait}s 内完成，请用 studio TUI 或重试")
     else:
         task = disp.create_task(args.description)
     print(f"✓ 任务已创建: {task['id']}")
-    print(f"  状态: {task['status']}")
+    if task.get("status"):
+        print(f"  状态: {task['status']}")
     return 0
 
 

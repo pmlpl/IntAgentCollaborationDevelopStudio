@@ -17,6 +17,38 @@ logger = get_logger(__name__)
 DELIVER_REL = Path(".studio") / "DELIVER.json"
 REVIEW_MARKER = "---STUDIO_REVIEW_JSON---"
 PROCESSED_SUFFIX = ".processed"
+MOCK_DELIVER_DESCRIPTIONS = {
+    "frontend": "实现了前端界面与用户交互，组件已测试通过",
+    "backend": "实现了后端 API 与数据模型，接口联调通过",
+    "test": "编写了自动化测试用例，覆盖核心路径",
+    "default": "已完成任务实现与本地验证",
+}
+
+
+def generate_mock_delivery(
+    project_dir: Path, task_id: str, assignee: str, description: str
+) -> dict[str, Any]:
+    """为 mock 模式生成合理的 Worker 交付记录。
+
+    不提供 files/run_command，仅靠 run_ok=true 声明通过。
+    process_worker_delivery 的 elif run_ok 分支会设 exit_code=0。
+    """
+    tips = description.lower()
+    if any(w in tips for w in ("前端", "ui", "界面", "frontend", "css", "html")):
+        summary = MOCK_DELIVER_DESCRIPTIONS["frontend"]
+    elif any(w in tips for w in ("后端", "api", "逻辑", "backend", "server", "数据库")):
+        summary = MOCK_DELIVER_DESCRIPTIONS["backend"]
+    elif any(w in tips for w in ("测试", "test", "qa", "质量")):
+        summary = MOCK_DELIVER_DESCRIPTIONS["test"]
+    else:
+        summary = MOCK_DELIVER_DESCRIPTIONS["default"]
+
+    return {
+        "task_id": task_id,
+        "assignee": assignee,
+        "summary": f"[mock] {summary} — {description[:80]}",
+        "run_ok": True,
+    }
 
 
 def deliver_path(worktree: Path) -> Path:

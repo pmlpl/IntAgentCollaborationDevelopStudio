@@ -390,16 +390,27 @@ def apply_subtasks(
 
 
 def get_ready_subtasks(project_dir: Path) -> list[dict[str, Any]]:
-    """返回 blocked 已解除、可开工的子任务。"""
+    """返回 blocked 已解除、可开工的子任务。
+
+    扫描 active + archive，确保归档依赖也能解除阻塞。
+    """
     active = project_dir / "tasks" / "active"
-    if not active.exists():
-        return []
-    tasks = []
-    for path in active.glob("*.yaml"):
-        tasks.append(yaml.safe_load(path.read_text(encoding="utf-8")))
-    done_ids = {t["assignee"] for t in tasks if t.get("status") in ("submitted", "approved", "archived")}
+    archive = project_dir / "tasks" / "archive"
+    all_tasks: list[dict[str, Any]] = []
+    for d in (active, archive):
+        if d.is_dir():
+            for path in d.glob("*.yaml"):
+                try:
+                    all_tasks.append(yaml.safe_load(path.read_text(encoding="utf-8")))
+                except Exception:
+                    continue
+    done_ids = {
+        t["assignee"]
+        for t in all_tasks
+        if t.get("status") in ("submitted", "approved", "archived")
+    }
     ready: list[dict[str, Any]] = []
-    for t in tasks:
+    for t in all_tasks:
         if t.get("status") != "blocked":
             continue
         waits = t.get("waits_on") or []
