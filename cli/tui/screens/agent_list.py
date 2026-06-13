@@ -160,18 +160,18 @@ class AgentListScreen(Screen):
             self._set_status("")
             return
 
-        # 按类别分组：已安装可用 → 需配置/可更新 → 未安装
-        ready: list[AgentCatalogRow] = []
-        cfg_needed: list[AgentCatalogRow] = []
+        # 按类别分组：已安装（可用在前，需配置/可更新在后） → 未安装
+        installed: list[AgentCatalogRow] = []
         not_installed: list[AgentCatalogRow] = []
 
         for row in rows:
-            if catalog_row_can_open(row):
-                ready.append(row)
-            elif row.installed or row.needs_configure:
-                cfg_needed.append(row)
+            if row.installed or row.needs_configure:
+                installed.append(row)
             else:
                 not_installed.append(row)
+
+        # installed 内部排序：可用 → 需配置/可更新 → 其他
+        installed.sort(key=lambda r: (not catalog_row_can_open(r), r.rank, r.name))
 
         # _row_map 负责将 ListView 中的序号映射回 _rows
         self._row_map: list[int] = []
@@ -192,8 +192,7 @@ class AgentListScreen(Screen):
                 self._row_map.append(rows.index(row))
                 list_view.append(ListItem(Label(self._list_label(row))))
 
-        _emit_category("已安装 · 可用", len(ready), ready)
-        _emit_category("已安装 · 需配置或可更新", len(cfg_needed), cfg_needed)
+        _emit_category("已安装", len(installed), installed)
         _emit_category("未安装", len(not_installed), not_installed)
 
         # 构建 ListView index ↔ data index 双向快速查找表（O(1) 替代 O(n) 遍历）
@@ -204,10 +203,6 @@ class AgentListScreen(Screen):
                 self._lv_to_data[lv_i] = data_idx
                 self._data_to_lv[data_idx] = lv_i
                 data_idx += 1
-
-        _emit_category("已安装 · 可用", len(ready), ready)
-        _emit_category("已安装 · 需配置或可更新", len(cfg_needed), cfg_needed)
-        _emit_category("未安装", len(not_installed), not_installed)
 
         if self._row_map:
             self._active_index = min(prev, len(self._row_map) - 1)
