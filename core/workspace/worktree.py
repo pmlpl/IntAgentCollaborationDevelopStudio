@@ -46,6 +46,35 @@ class WorktreeManager:
         self._run("worktree", "add", str(dest), branch)
         return dest
 
+    def get_or_create_persistent(self, position_id: str) -> Path:
+        """为岗位创建持久 worktree（目录复用，跨任务缓存保留）。
+
+        目录名格式: workspaces/{position_id}/
+        同一岗位的连续任务复用同一目录，Agent CLI 自身缓存 (如 Claude Code
+        的 project hash) 基于路径命中。
+        """
+        dest = self.workspaces_root / position_id
+        if dest.exists():
+            logger.info("worktree: reuse persistent %s", dest)
+            return dest
+
+        # 创建新 worktree
+        branch = f"studio/persist/{position_id}"
+        # 删除可能已存在的分支
+        try:
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            pass
+        logger.info("worktree: create persistent branch=%s dest=%s", branch, dest)
+        self._run("branch", branch, "HEAD")
+        self._run("worktree", "add", str(dest), branch)
+        return dest
+
     def _infer_branch_name(self, dest: Path) -> str:
         """从 worktree 路径反推 git 分支名（格式：studio/task_id-slug-xxx）。"""
         name = dest.name  # e.g. "task123-my-feature"

@@ -457,11 +457,34 @@ class Dispatcher:
 
             assignee = task["assignee"]
             pos = self._position_by_id(assignee)
+
+            # PID-Aware: 若该 Agent 进程还活着，push inbox 而非 spawn 新终端
+            from core.terminal.agent_launcher import is_agent_process_alive
+
+            if is_agent_process_alive(assignee):
+                logger.info(
+                    "worker %s PID alive, pushing to inbox instead of spawn", assignee
+                )
+                bus = MessageBus(self.project_dir / "agents" / assignee / "inbox")
+                bus.deliver(
+                    Message(
+                        id=Message.new_id(),
+                        type="task_assign",
+                        sender="__system__",
+                        recipient=assignee,
+                        task_id=sub_id,
+                        payload={"description": str(task.get("description", ""))},
+                        trace=["system", "pid-reuse"],
+                    )
+                )
+                self._save_spawned_worker_id(root_task_id, sub_id)
+                continue
+
             worktree_path = project_root
             if mgr:
-                slug = task["id"].replace(root_task_id + "-", "")
                 try:
-                    worktree_path = mgr.create(task["id"], slug[:20])
+                    # P0-B: 持久 worktree per agent，复用保留缓存
+                    worktree_path = mgr.get_or_create_persistent(assignee)
                 except Exception:
                     worktree_path = project_root
 

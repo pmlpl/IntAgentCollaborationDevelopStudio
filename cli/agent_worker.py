@@ -390,6 +390,127 @@ def cmd_review(args: argparse.Namespace) -> int:
     return rc
 
 
+def _try_work_from_inbox(
+    root: Path,
+    project_dir: Path,
+    position_id: str,
+    worktree: Path | None,
+    *,
+    mock: bool = False,
+) -> int:
+    """读取 inbox 中下一条 task_assign 消息并执行。无消息返回 0。"""
+    agent_dir = project_dir / "agents" / position_id
+    inbox = MessageBus(agent_dir / "inbox")
+    messages = inbox.drain()
+    for msg in messages:
+        if msg.type == "task_assign":
+            task_id = msg.task_id
+            description = msg.payload.get("description", "")
+            logger.info("watch: %s picked up task_assign %s", position_id, task_id)
+
+            pos = load_position(project_dir, position_id)
+            can_run, reason = _agent_can_execute(root, pos["agent"])
+            use_mock = mock or not can_run
+            if not can_run and not mock:
+                logger.info("watch: agent %s cannot execute: %s, falling back to mock", pos["agent"], reason)
+
+            rc = run_position_task(
+                root, project_dir, position_id, description,
+                worktree=worktree, mock=use_mock,
+            )
+            write_state(
+                agent_dir,
+                AgentRuntimeState(
+                    task_id=task_id,
+                    status="submitted" if rc == 0 else "idle",
+                    progress=100 if rc == 0 else 0,
+                    message="已提交" if rc == 0 else "执行失败",
+                ),
+            )
+            return 0
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Worker 持续运行模式：执行初始任务后轮询 inbox，复用同一进程/终端。
+
+    此模式避免每次任务都 spawn 新终端，大幅提升 Agent CLI 缓存命中率。
+    """
+    import time as _time
+
+    root = Path(args.root).resolve()
+    project_dir = load_project(root, args.project)
+    position_id = args.position
+
+    worktree = None
+    if args.worktree:
+        worktree = Path(args.worktree)
+
+    force_mock = os.environ.get("STUDIO_MOCK", "").lower() in ("1", "true", "yes") or args.mock
+    pos = load_position(project_dir, position_id)
+    can_run, reason = _agent_can_execute(root, pos["agent"])
+    use_mock = force_mock or not can_run
+
+    # 注册 PID
+    task_id = args.task_id or ""
+    _pid_path = Path.home() / ".studio" / "agent_pids.json"
+    import json as _json
+    from datetime import datetime, timezone as _tz
+    _pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pids: dict = {}
+    if _pid_path.is_file():
+        try:
+            pids = _json.loads(_pid_path.read_text(encoding="utf-8"))
+        except _json.JSONDecodeError:
+            pass
+    pids[position_id] = {
+        "pid": os.getpid(),
+        "task_id": task_id,
+        "worktree": str(worktree or ""),
+        "project": args.project,
+        "spawned_at": datetime.now(_tz.utc).isoformat(),
+    }
+    _pid_path.write_text(_json.dumps(pids, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 执行初始任务（若有）
+    if args.description and args.description != "等待任务…":
+        rc = run_position_task(
+            root, project_dir, position_id, args.description,
+            worktree=worktree, mock=use_mock,
+        )
+    else:
+        _try_work_from_inbox(root, project_dir, position_id, worktree, mock=use_mock)
+
+    # 轮询 inbox
+    POLL_INTERVAL = 5  # 秒
+    print(f"[watch] {position_id} 等待新任务 (PID={os.getpid()})…")
+    try:
+        while True:
+            _time.sleep(POLL_INTERVAL)
+            # 刷新 PID 注册（证明自己还活着）
+            if _pid_path.is_file():
+                try:
+                    pids = _json.loads(_pid_path.read_text(encoding="utf-8"))
+                except _json.JSONDecodeError:
+                    pids = {}
+                if position_id in pids:
+                    pids[position_id]["last_seen"] = datetime.now(_tz.utc).isoformat()
+                    _pid_path.write_text(_json.dumps(pids, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            _try_work_from_inbox(root, project_dir, position_id, worktree, mock=use_mock)
+    except KeyboardInterrupt:
+        # 退出时清理 PID 注册
+        if _pid_path.is_file():
+            try:
+                pids = _json.loads(_pid_path.read_text(encoding="utf-8"))
+            except _json.JSONDecodeError:
+                pids = {}
+            pids.pop(position_id, None)
+            _pid_path.write_text(_json.dumps(pids, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n[watch] {position_id} 已退出")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent_worker")
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -420,6 +541,16 @@ def main(argv: list[str] | None = None) -> int:
     p_rev.add_argument("--task-id", required=True)
     p_rev.add_argument("--mock", action="store_true", help="强制规则审查")
     p_rev.set_defaults(func=cmd_review)
+
+    p_watch = sub.add_parser("watch", help="Worker 持续运行模式：轮询 inbox 复用会话")
+    p_watch.add_argument("--root", default=str(get_studio_root()))
+    p_watch.add_argument("--project", required=True)
+    p_watch.add_argument("--position", required=True)
+    p_watch.add_argument("--task-id", default=None)
+    p_watch.add_argument("--description", default="等待任务…")
+    p_watch.add_argument("--worktree", default=None)
+    p_watch.add_argument("--mock", action="store_true", help="强制 mock 执行")
+    p_watch.set_defaults(func=cmd_watch)
 
     args = parser.parse_args(argv)
     return args.func(args)
