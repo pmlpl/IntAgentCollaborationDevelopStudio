@@ -26,6 +26,7 @@ class ReviewScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._pending: list[dict] = []
+        self._checklist_cache: dict[str, str] = {}  # task_id → 渲染后 checklist
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -47,11 +48,22 @@ class ReviewScreen(Screen):
             self._update_checklist()
 
     def _update_checklist(self) -> None:
+        """更新右侧审查清单（结果缓存，避免每次光标移动重读文件）。
+
+        旧实现在 on_list_view_highlighted 中每次都 yaml.safe_load +
+        OrgTree.from_yaml_data + build_review_checklist，导致切换卡顿。
+        """
         widget = self.query_one("#review-checklist", Static)
         task = self._selected_task()
         if not task:
             widget.update("")
             return
+        task_id = task.get("id", "")
+        cached = self._checklist_cache.get(task_id)
+        if cached is not None:
+            widget.update(cached)
+            return
+
         root = get_studio_root()
         project_id = getattr(self.app, "project_name", None) or resolve_project_id(root)
         try:
@@ -66,7 +78,9 @@ class ReviewScreen(Screen):
                 {"id": assignee_id, "resume": {}},
             )
             lines = build_review_checklist(root, tree, task, assignee)
-            widget.update(format_review_checklist(lines))
+            text = format_review_checklist(lines)
+            self._checklist_cache[task_id] = text
+            widget.update(text)
         except FileNotFoundError:
             widget.update("")
 
@@ -75,6 +89,7 @@ class ReviewScreen(Screen):
         list_view = self.query_one("#review-list", ListView)
         list_view.clear()
         self._pending = []
+        self._checklist_cache.clear()
         try:
             project_id = getattr(self.app, "project_name", None) or resolve_project_id(root)
             disp = get_dispatcher(root, project_id)

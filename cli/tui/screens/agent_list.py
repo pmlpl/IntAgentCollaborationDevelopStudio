@@ -49,6 +49,12 @@ class AgentListScreen(Screen):
         self._loading: bool = False
         self._detail_cache: dict[str, str] = {}
         self._label_cache: dict[str, str] = {}
+        self._action_hint_cache: dict[str, str] = {}
+        # 预计算 can_open 避免高亮切换时重复调用 agent_launch_check_error
+        self._can_open_cache: dict[str, bool] = {}
+        # 将 ListView index 映射到 _row_map index 的快速查找表
+        self._lv_to_data: dict[int, int] = {}
+        self._data_to_lv: dict[int, int] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -130,6 +136,10 @@ class AgentListScreen(Screen):
         self._rows = rows
         self._detail_cache.clear()
         self._label_cache.clear()
+        self._action_hint_cache.clear()
+        self._can_open_cache.clear()
+        self._lv_to_data.clear()
+        self._data_to_lv.clear()
         prev = self._active_index
 
         stats = catalog_summary(rows)
@@ -186,6 +196,19 @@ class AgentListScreen(Screen):
         _emit_category("已安装 · 需配置或可更新", len(cfg_needed), cfg_needed)
         _emit_category("未安装", len(not_installed), not_installed)
 
+        # 构建 ListView index ↔ data index 双向快速查找表（O(1) 替代 O(n) 遍历）
+        data_idx = 0
+        self._data_to_lv: dict[int, int] = {}
+        for lv_i, child in enumerate(list_view.children):
+            if not (hasattr(child, 'disabled') and child.disabled):
+                self._lv_to_data[lv_i] = data_idx
+                self._data_to_lv[data_idx] = lv_i
+                data_idx += 1
+
+        _emit_category("已安装 · 可用", len(ready), ready)
+        _emit_category("已安装 · 需配置或可更新", len(cfg_needed), cfg_needed)
+        _emit_category("未安装", len(not_installed), not_installed)
+
         if self._row_map:
             self._active_index = min(prev, len(self._row_map) - 1)
             list_view.index = self._data_to_listview_index(self._active_index)
@@ -196,38 +219,29 @@ class AgentListScreen(Screen):
             self._set_status("版本信息已更新")
 
     def _listview_to_data_index(self, lv_index: int | None) -> int | None:
-        """将 ListView 原始序号（含类别标题行）换算为 _row_map 索引。"""
+        """将 ListView 原始序号（含类别标题行）换算为 _row_map 索引。
+
+        使用预构建的 _lv_to_data 字典实现 O(1) 查找，避免每次高亮切换
+        都遍历全部子节点（旧实现 O(n) 导致卡顿）。
+        """
         if lv_index is None:
             return None
         row_map = getattr(self, '_row_map', None)
         if not row_map:
             return None
-        # 跳过标题行，找到 lv_index 对应的实际数据位置
-        data_idx = 0
-        for lv_i in range(lv_index + 1):
-            item = self.query_one("#agent-list", ListView).children[lv_i]
-            if hasattr(item, 'disabled') and item.disabled:
-                continue  # 类别标题，不计入数据索引
-            data_idx += 1
-        data_idx -= 1  # 转为 0-based
-        if 0 <= data_idx < len(row_map):
+        lv_map = getattr(self, '_lv_to_data', {})
+        data_idx = lv_map.get(lv_index)
+        if data_idx is not None and 0 <= data_idx < len(row_map):
             return data_idx
         return None
 
     def _data_to_listview_index(self, data_index: int) -> int:
-        """将 _row_map 索引换算回 ListView 原始序号。"""
+        """将 _row_map 索引换算回 ListView 原始序号（O(1) 查找）。"""
         row_map = getattr(self, '_row_map', None)
         if not row_map or data_index < 0 or data_index >= len(row_map):
             return 0
-        list_view = self.query_one("#agent-list", ListView)
-        data_count = 0
-        for lv_i, child in enumerate(list_view.children):
-            if hasattr(child, 'disabled') and child.disabled:
-                continue
-            if data_count == data_index:
-                return lv_i
-            data_count += 1
-        return 0
+        dl_map = getattr(self, '_data_to_lv', {})
+        return dl_map.get(data_index, 0)
 
     def _sync_index_from_list(self) -> None:
         list_view = self.query_one("#agent-list", ListView)
@@ -240,19 +254,36 @@ class AgentListScreen(Screen):
         self.query_one("#agent-status", Static).update(f"{prefix}{message}[/]")
 
     def _row_action_hint(self, row: AgentCatalogRow) -> str:
+        """返回操作提示（结果缓存，避免每次高亮切换都调用 PATH 解析）。
+
+        catalog_row_can_open() 内部会调用 agent_launch_check_error()
+        做 PATH 解析和文件 I/O，是切换卡顿的根因。
+        """
+        cached = self._action_hint_cache.get(row.id)
+        if cached is not None:
+            return cached
+
+        # 预计算 can_open 也缓存起来，供 action_activate_selected 复用
+        can_open = catalog_row_can_open(row)
+        self._can_open_cache[row.id] = can_open
+
         if row.update_available and is_runnable_install_cmd(row.install_cmd):
-            return "有新版本，双击在终端运行更新命令"
-        if row.needs_configure:
-            return "双击运行 goose configure 配置 provider"
-        if catalog_row_can_open(row):
-            return "双击打开 Agent TUI"
-        if not row.installed and is_runnable_install_cmd(row.install_cmd):
-            return "双击在终端运行安装命令"
-        if not row.installed:
-            return "请手动安装"
-        if row.launch_error:
-            return row.launch_error
-        return "请查看 docs/INSTALL-AGENTS.md"
+            hint = "有新版本，双击在终端运行更新命令"
+        elif row.needs_configure:
+            hint = "双击运行 goose configure 配置 provider"
+        elif can_open:
+            hint = "双击打开 Agent TUI"
+        elif not row.installed and is_runnable_install_cmd(row.install_cmd):
+            hint = "双击在终端运行安装命令"
+        elif not row.installed:
+            hint = "请手动安装"
+        elif row.launch_error:
+            hint = row.launch_error
+        else:
+            hint = "请查看 docs/INSTALL-AGENTS.md"
+
+        self._action_hint_cache[row.id] = hint
+        return hint
 
     def _format_version_line(self, row: AgentCatalogRow) -> str:
         if row.installed and row.installed_version:
@@ -448,7 +479,11 @@ class AgentListScreen(Screen):
             self._spawn_install_worker(row, goose_setup_command())
             return
 
-        if catalog_row_can_open(row):
+        # 使用缓存的 can_open 值（由 _row_action_hint 在高亮时预计算）
+        can_open = self._can_open_cache.get(row.id)
+        if can_open is None:
+            can_open = catalog_row_can_open(row)
+        if can_open:
             self._busy = True
             self._set_status(f"正在打开 {row.name}…")
             self._spawn_agent_worker(row)
@@ -573,6 +608,8 @@ class AgentListScreen(Screen):
         # 清除缓存让下一帧读到新状态
         self._label_cache.clear()
         self._detail_cache.clear()
+        self._action_hint_cache.clear()
+        self._can_open_cache.clear()
 
         # 只刷新当前行，不重建整个列表
         new_state = agent_enabled(root, row.agent_id)
