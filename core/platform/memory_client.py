@@ -85,18 +85,34 @@ def upsert(
     project_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Path:
-    """写入或更新一条记忆。"""
+    """写入或更新一条记忆（文件 + SQLite FTS + 可选 ChromaDB 向量）。"""
     tree = _load_tree(project_dir)
     _check_access(tree, position, namespace, write=True, project_id=project_id)
 
     backend = _resolve_backend(root)
-    if backend == "sqlite":
-        _fts_upsert(root, namespace, key, text, position.get("id", "unknown"))
-        # 同时写文件作为备份
-        _file_upsert(root, namespace, key, text, position, metadata)
-        return _entry_path(root, namespace, key)
 
-    return _file_upsert(root, namespace, key, text, position, metadata)
+    # 文件写入（始终执行，作为主存储）
+    file_path = _file_upsert(root, namespace, key, text, position, metadata)
+
+    # SQLite FTS 写入
+    if backend in ("sqlite", "chromadb"):
+        _fts_upsert(root, namespace, key, text, position.get("id", "unknown"))
+
+    # ChromaDB 向量写入
+    if backend == "chromadb":
+        try:
+            from core.platform.vector_memory import vector_upsert
+            persist_dir = store_root(root) / "chromadb"
+            update_by = position.get("id", "unknown")
+            vector_upsert(
+                persist_dir, namespace, key, text,
+                metadata={"updated_by": update_by, **(metadata or {})},
+            )
+        except Exception as exc:
+            logger.warning("ChromaDB vector_upsert failed for %s/%s: %s", namespace, key, exc)
+            # 向量写入失败不阻止整体写入（降级而非中断）
+
+    return file_path
 
 
 def _file_upsert(
@@ -130,20 +146,34 @@ def delete(
     *,
     project_id: str | None = None,
 ) -> bool:
-    """删除一条记忆。"""
+    """删除一条记忆（文件 + SQLite FTS + 可选 ChromaDB）。"""
     tree = _load_tree(project_dir)
     _check_access(tree, position, namespace, write=True, project_id=project_id)
 
     backend = _resolve_backend(root)
-    fts_deleted = False
-    if backend == "sqlite":
-        fts_deleted = _fts_delete(root, namespace, key)
+    deleted = False
 
+    # FTS 删除
+    if backend in ("sqlite", "chromadb"):
+        try:
+            deleted = _fts_delete(root, namespace, key)
+        except Exception:
+            pass
+
+    # ChromaDB 删除
+    if backend == "chromadb":
+        try:
+            from core.platform.vector_memory import vector_delete
+            vector_delete(store_root(root) / "chromadb", namespace, key)
+        except Exception as exc:
+            logger.warning("ChromaDB vector_delete failed: %s", exc)
+
+    # 文件删除
     path = _entry_path(root, namespace, key)
     if path.exists():
         path.unlink()
         return True
-    return fts_deleted
+    return deleted
 
 
 def search(
@@ -156,11 +186,32 @@ def search(
     project_id: str | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    """记忆搜索：SQLite FTS5 优先，文件回退。"""
+    """记忆搜索：ChromaDB 向量 > SQLite FTS5 > 文件回退。
+
+    后端为 chromadb 时：向量检索 + FTS RRF 混合排序（语义 + 关键词双通路）。
+    """
     tree = _load_tree(project_dir)
     _check_access(tree, position, namespace, write=False, project_id=project_id)
 
     backend = _resolve_backend(root)
+
+    if backend == "chromadb":
+        try:
+            persist_dir = store_root(root) / "chromadb"
+            fts_results = None
+            try:
+                fts_results = _fts_search(root, namespace, query, limit)
+            except Exception:
+                pass
+            from core.platform.vector_memory import hybrid_search
+            return hybrid_search(
+                persist_dir, namespace, query,
+                fts_results=fts_results,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("ChromaDB hybrid search failed, falling back to FTS: %s", exc)
+
     if backend == "sqlite":
         try:
             return _fts_search(root, namespace, query, limit)
@@ -190,27 +241,48 @@ def _file_search(
 
 
 def list_namespaces(root: Path) -> list[str]:
-    """列出已有记忆的命名空间。"""
+    """列出已有记忆的命名空间（合并文件 + SQLite FTS + ChromaDB）。"""
     backend = _resolve_backend(root)
-    if backend == "sqlite":
-        db = _get_fts_db(root)
-        rows = db.execute("SELECT DISTINCT namespace FROM memory_index").fetchall()
-        return sorted(set(r[0] for r in rows if r[0]))
+    namespaces: set[str] = set()
+
+    # ChromaDB
+    if backend == "chromadb":
+        try:
+            from core.platform.vector_memory import vector_list_namespaces
+            namespaces.update(vector_list_namespaces(store_root(root) / "chromadb"))
+        except Exception:
+            pass
+
+    # SQLite FTS
+    if backend in ("sqlite", "chromadb"):
+        try:
+            db = _get_fts_db(root)
+            rows = db.execute("SELECT DISTINCT namespace FROM memory_index").fetchall()
+            namespaces.update(r[0] for r in rows if r[0])
+        except Exception:
+            pass
+
+    # 文件
     base = store_root(root)
-    if not base.exists():
-        return []
-    result: list[str] = []
-    for child in base.iterdir():
-        if child.is_dir():
-            result.append(child.name.replace("__", "/"))
-    return sorted(result)
+    if base.exists():
+        for child in base.iterdir():
+            if child.is_dir() and not child.name.startswith("chromadb"):
+                namespaces.add(child.name.replace("__", "/"))
+
+    return sorted(namespaces)
 
 
 # ── SQLite FTS5 后端 ──
 
 def _resolve_backend(root: Path) -> str:
     cfg = _platform_config(root).get("memory") or {}
-    return str(cfg.get("backend", "file")).strip().lower()
+    backend = str(cfg.get("backend", "file")).strip().lower()
+    if backend == "chromadb":
+        from core.platform.vector_memory import is_vector_available
+        if not is_vector_available():
+            logger.warning("chromadb not installed, falling back to sqlite")
+            return "sqlite"
+    return backend
 
 
 def _fts_db_path(root: Path) -> Path:

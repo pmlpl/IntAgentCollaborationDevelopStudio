@@ -123,14 +123,19 @@ def append_mcp_audit(
 
 
 class McpGateway:
-    """MCP Gateway：校验 allowlist + 写审计 + 连接池管理。"""
+    """MCP Gateway：校验 allowlist + 写审计 + 真实 stdio 连接池。
+
+    当 platform.yaml 中 mcp.gateway_enabled=true 时，
+    使用 platform/mcp/gateway/ 中的 Python 原生连接池管理 MCP 服务器；
+    为 false 时返回 stub 响应（默认行为）。
+    """
 
     def __init__(self, root: Path, project_dir: Path, position_id: str):
         self.root = root
         self.project_dir = project_dir
         self.position_id = position_id
         self._allowlist = self._load_allowlist()
-        self._pool: dict[str, object] = {}
+        self._real_pool: Any = None  # McpConnectionPool (lazy init)
 
     def _load_allowlist(self) -> set[str]:
         path = (
@@ -148,25 +153,98 @@ class McpGateway:
     def _cfg(self) -> dict[str, Any]:
         return load_gateway_config(self.root)
 
+    def _get_pool(self):
+        """延迟获取全局连接池（仅在 gateway_enabled=true 时）。
+
+        通过文件路径导入以避免 platform/ 目录与 Python 内置 platform 模块冲突。
+        先加载 process_manager 依赖，再加载 pool 模块。
+        """
+        if self._real_pool is None:
+            try:
+                import importlib.util
+                import sys
+
+                gateway_dir = self.root / "platform" / "mcp" / "gateway"
+
+                # 1. 先加载 process_manager（pool 的依赖）
+                pm_path = gateway_dir / "process_manager.py"
+                if pm_path.is_file():
+                    pm_spec = importlib.util.spec_from_file_location(
+                        "mcp_process_manager", str(pm_path)
+                    )
+                    if pm_spec and pm_spec.loader:
+                        pm_mod = importlib.util.module_from_spec(pm_spec)
+                        sys.modules["mcp_process_manager"] = pm_mod
+                        sys.modules["platform.mcp.gateway.process_manager"] = pm_mod
+                        pm_spec.loader.exec_module(pm_mod)
+
+                # 2. 再加载 pool
+                pool_path = gateway_dir / "pool.py"
+                if not pool_path.is_file():
+                    raise McpError(f"MCP Gateway pool 文件不存在: {pool_path}")
+
+                pool_spec = importlib.util.spec_from_file_location(
+                    "mcp_gateway_pool", str(pool_path)
+                )
+                if pool_spec is None or pool_spec.loader is None:
+                    raise McpError("无法加载 MCP Gateway pool 模块")
+                pool_mod = importlib.util.module_from_spec(pool_spec)
+                sys.modules["mcp_gateway_pool"] = pool_mod
+                pool_spec.loader.exec_module(pool_mod)
+
+                get_global_pool = getattr(pool_mod, "get_global_pool")
+                self._real_pool = get_global_pool()
+            except (ImportError, OSError) as exc:
+                raise McpError(f"MCP Gateway 不可用: {exc}") from exc
+        return self._real_pool
+
     def connect(self, mcp_id: str) -> bool:
-        """建立到 MCP 服务器的连接（当前为骨架，返回 True 表示 allowlist 通过）。"""
+        """建立到 MCP 服务器的连接。
+
+        gateway_enabled=true: 实际启动 stdio 子进程并完成 initialize 握手。
+        gateway_enabled=false: 仅校验 allowlist（不启动进程）。
+        """
         if mcp_id not in self._allowlist:
             return False
         registry = load_mcp_registry(self.root)
         if mcp_id not in registry:
             return False
-        # TODO Phase 4+: 实际启动 stdio/sse 子进程
-        self._pool[mcp_id] = {"connected": True, "meta": registry[mcp_id]}
-        return True
+
+        cfg = self._cfg()
+        if cfg.get("enabled", False):
+            meta = registry[mcp_id]
+            try:
+                pool = self._get_pool()
+                pool.connect(
+                    mcp_id,
+                    meta.get("command", "npx"),
+                    meta.get("args", []),
+                )
+                return True
+            except Exception as exc:
+                logger.error("MCP connect %s failed: %s", mcp_id, exc)
+                return False
+        else:
+            # Stub 模式：仅记录连接
+            return True
 
     def disconnect(self, mcp_id: str) -> None:
-        self._pool.pop(mcp_id, None)
+        cfg = self._cfg()
+        if cfg.get("enabled", False) and self._real_pool is not None:
+            self._real_pool.disconnect(mcp_id)
 
     def connected_servers(self) -> list[str]:
-        return list(self._pool.keys())
+        cfg = self._cfg()
+        if cfg.get("enabled", False) and self._real_pool is not None:
+            return self._real_pool.connected_servers()
+        return []
 
     def invoke(self, mcp_id: str, tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-        """代理 MCP 工具调用。"""
+        """代理 MCP 工具调用。
+
+        gateway_enabled=true: 真实转发到 MCP server 进程。
+        gateway_enabled=false: 返回 stub 响应。
+        """
         args = args or {}
         registry = load_mcp_registry(self.root)
         if mcp_id not in self._allowlist:
@@ -194,12 +272,28 @@ class McpGateway:
                 "message": "MCP Gateway 已禁用（platform.yaml mcp.gateway_enabled=false）",
             }
 
-        append_mcp_audit(
-            self.project_dir, self.position_id, mcp_id, tool,
-            ok=True, detail="gateway stub (real stdio not yet implemented)",
-        )
-        return {
-            "ok": True, "stub": True,
-            "mcp_id": mcp_id, "tool": tool, "args": args,
-            "message": "MCP Gateway 骨架：尚未连接真实 stdio 进程",
-        }
+        # 真实调用
+        try:
+            pool = self._get_pool()
+            # 确保已连接
+            pool.connect(
+                mcp_id,
+                registry[mcp_id].get("command", "npx"),
+                registry[mcp_id].get("args", []),
+            )
+            result = pool.invoke(mcp_id, tool, args)
+            append_mcp_audit(
+                self.project_dir, self.position_id, mcp_id, tool,
+                ok=True, detail="real stdio call succeeded",
+            )
+            return {
+                "ok": True, "stub": False,
+                "mcp_id": mcp_id, "tool": tool, "args": args,
+                "result": result,
+            }
+        except Exception as exc:
+            append_mcp_audit(
+                self.project_dir, self.position_id, mcp_id, tool,
+                ok=False, detail=str(exc),
+            )
+            raise McpError(f"MCP call {mcp_id}/{tool} failed: {exc}") from exc

@@ -170,6 +170,65 @@ def cmd_agent_detect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent_check(args: argparse.Namespace) -> int:
+    """对指定（或全部）Agent 执行健康检查：PATH → --version → 冒烟。"""
+    from agents.health import check_agent, check_all_agents
+
+    root = get_studio_root()
+    agents_cfg = load_agents_config(root).get("agents", {})
+
+    if args.agent_id:
+        if args.agent_id not in agents_cfg:
+            print(f"未知 Agent: {args.agent_id}", file=__import__("sys").stderr)
+            return 1
+        report = check_agent(root, args.agent_id, smoke=not args.no_smoke, cwd=Path.cwd())
+        _print_health_report(report, verbose=args.verbose)
+        return 0 if report.healthy else 1
+    else:
+        reports = check_all_agents(root, smoke=not args.no_smoke, cwd=Path.cwd())
+        ok = 0
+        for agent_id, report in reports.items():
+            _print_health_report(report, verbose=args.verbose)
+            if report.healthy:
+                ok += 1
+        degraded = sum(1 for r in reports.values() if r.overall == "degraded")
+        unavailable = sum(1 for r in reports.values() if r.overall == "unavailable")
+        print(f"\nHealthy: {ok}/{len(reports)}  Degraded: {degraded}  Unavailable: {unavailable}")
+        return 0 if ok == len(reports) else 1
+
+
+def _print_health_report(report, *, verbose: bool = False) -> None:
+    """格式化打印 AgentHealthReport。"""
+    from agents.health import AgentHealthReport
+
+    status_icon = {"ok": "[OK]", "degraded": "[!!]", "unavailable": "[XX]"}
+    icon = status_icon.get(report.overall, "[??]")
+
+    print(f"\n{icon} {report.agent_id} [{report.overall}]")
+    if report.command:
+        print(f"  command: {report.command}")
+    if report.resolved_path:
+        print(f"  path: {report.resolved_path}")
+
+    for check in report.checks:
+        mark = "OK" if check["ok"] else "!!"
+        detail = str(check["detail"])[:150]
+        print(f"  [{mark}] {check['check']}: {detail}")
+
+    if report.api_key_ok is False:
+        print(f"  ⚠ API key 未配置或无效（Agent CLI 可能无法真正工作）")
+
+    if verbose:
+        if report.version:
+            print(f"  version output ({len(report.version)} chars):")
+            for line in report.version.splitlines()[:5]:
+                print(f"    | {line[:120]}")
+        if report.smoke_output:
+            print(f"  smoke output ({len(report.smoke_output)} chars):")
+            for line in report.smoke_output.splitlines()[:5]:
+                print(f"    | {line[:120]}")
+
+
 def register_agent_commands(sub) -> None:
     """注册 studio agent 子命令。"""
     p_agent = sub.add_parser("agent", help="Agent 交互 TUI（打开窗口 / 检测 CLI / 启用禁用）")
@@ -180,6 +239,12 @@ def register_agent_commands(sub) -> None:
 
     p_list = p_agent_sub.add_parser("list", help="热门 Agent 目录（安装状态 / 安装命令）")
     p_list.set_defaults(func=cmd_agent_list)
+
+    p_check = p_agent_sub.add_parser("check", help="Agent 健康检查（PATH → --version → 冒烟）")
+    p_check.add_argument("agent_id", nargs="?", help="要检查的 Agent ID，不指定则检查全部")
+    p_check.add_argument("--no-smoke", action="store_true", help="跳过冒烟测试（仅 --version）")
+    p_check.add_argument("--verbose", "-v", action="store_true", help="显示详细输出")
+    p_check.set_defaults(func=cmd_agent_check)
 
     p_open = p_agent_sub.add_parser("open", help="打开 Agent 交互 TUI 窗口")
     p_open.add_argument("agent_id", nargs="?", help="agents.yaml 中的 id，如 claude-code")

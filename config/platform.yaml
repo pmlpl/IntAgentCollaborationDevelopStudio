@@ -1,6 +1,7 @@
 memory:
-  backend: sqlite
+  backend: sqlite               # file | sqlite | chromadb — chromadb 启用向量语义搜索
   store_dir: platform/memory/store
+  chromadb_dir: platform/memory/chromadb  # chromadb 持久化目录
 mcp:
   gateway_enabled: false
   audit_relative: agents/{position_id}/logs/mcp-audit.log
