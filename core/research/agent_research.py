@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 from agents.runner import agent_available, run_agent_prompt_capture
-from core.project import ORG_TEMPLATES, get_studio_root
+from core.project import ORG_TEMPLATES, get_studio_root, list_all_role_ids
 from core.research.local_llm import local_llm_available, run_local_prompt_capture
 from core.project_profile import (
     ProjectProfile,
@@ -36,6 +36,7 @@ class ResearchReport:
     similar_products: list[dict[str, str]] = field(default_factory=list)
     similar_local_template: str | None = None
     recommended_template: str = "web-fullstack"
+    recommended_roles: list[str] = field(default_factory=list)
     summary: str = ""
     source: str = "agent"
     web_hits: list[SearchHit] = field(default_factory=list)
@@ -62,11 +63,13 @@ def _research_agent_key(root: Path) -> str:
 def _research_mode(root: Path) -> str:
     """调研 LLM 模式：offline | lmstudio | ollama | agent。"""
     env = os.environ.get("STUDIO_RESEARCH_MODE", "").strip().lower()
-    if env in ("offline", "lmstudio", "ollama", "agent", "local", "none"):
+    if env in ("offline", "lmstudio", "ollama", "agent", "local", "none", "openai_compatible"):
         if env == "local":
             return "agent"
         if env == "none":
             return "offline"
+        if env == "openai_compatible":
+            return "lmstudio"
         return env
     cfg = load_research_config(root)
     mode = str(cfg.get("mode", "agent")).strip().lower()
@@ -74,7 +77,9 @@ def _research_mode(root: Path) -> str:
         return "agent"
     if mode == "none":
         return "offline"
-    if mode in ("offline", "lmstudio", "ollama", "agent"):
+    if mode in ("offline", "lmstudio", "ollama", "agent", "openai_compatible"):
+        if mode == "openai_compatible":
+            return "lmstudio"
         return mode
     return "agent"
 
@@ -122,6 +127,49 @@ def parse_research_output(stdout: str) -> dict[str, Any]:
     return data
 
 
+def _role_catalog_for_prompt() -> str:
+    """岗位目录摘要，供调研 Agent 选择 recommended_roles。"""
+    from core.project import get_role_catalog
+
+    catalog = get_role_catalog()
+    lines: list[str] = []
+    for rid in list_all_role_ids():
+        meta = catalog.get(rid) or {}
+        lines.append(f"- {rid}: {meta.get('name')} · {meta.get('title')}")
+    return "\n".join(lines)
+
+
+def _normalize_role_ids(raw: Any, description: str, template_id: str) -> list[str]:
+    """校验并补全 recommended_roles。"""
+    from core.project import get_role_catalog
+
+    catalog = get_role_catalog()
+    roles: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            rid = str(item).strip()
+            if rid in catalog and rid not in roles:
+                roles.append(rid)
+    if "laowang" not in roles and "laowang" in catalog:
+        roles.insert(0, "laowang")
+    if not roles:
+        roles = list(ORG_TEMPLATES.get(template_id, ORG_TEMPLATES["web-fullstack"])["roles"])
+    return roles
+
+
+def load_research_prompt_prefix(root: Path | None = None) -> str:
+    """读取 config 中可选的调研提示词前缀（prompt_file）。"""
+    cfg = load_research_config(root)
+    rel = str(cfg.get("prompt_file") or "").strip()
+    if not rel:
+        return ""
+    base = root or get_studio_root()
+    path = (base / rel).resolve()
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8").strip() + "\n\n"
+
+
 def _normalize_report(
     description: str,
     data: dict[str, Any],
@@ -151,6 +199,7 @@ def _normalize_report(
         products = []
 
     summary = str(data.get("summary") or "").strip()
+    roles = _normalize_role_ids(data.get("recommended_roles"), description, tpl)
     return ResearchReport(
         description=description,
         technologies=[str(t) for t in techs],
@@ -163,6 +212,7 @@ def _normalize_report(
         ],
         similar_local_template=local_tpl,
         recommended_template=tpl,
+        recommended_roles=roles,
         summary=summary,
         source=source,
         web_hits=web_hits,
@@ -218,26 +268,33 @@ def build_research_prompt(
     """构建发给调研 Agent 的 prompt。"""
     extra = f"\n用户补充技术倾向：{tech_stack}" if tech_stack.strip() else ""
     template_ids = ", ".join(VALID_TEMPLATES)
+    role_catalog = _role_catalog_for_prompt()
     profile_block = profile_context_for_prompt(profile)
+    prefix = load_research_prompt_prefix(root)
     return (
-        f"你是 Studio 平台的项目调研专员。请基于【项目画像】、联网搜索结果与平台模板，"
-        f"分析用户要做的项目，输出技术栈建议、相似产品、组织编制建议。\n\n"
+        f"{prefix}"
+        f"你是 Studio 平台的项目调研专员。请基于【项目画像】、联网搜索结果与岗位目录，"
+        f"分析用户要做的项目，输出技术栈、相似产品、**推荐岗位编制**。\n\n"
         f"## 项目描述（本次输入）\n{description}{extra}\n\n"
         f"## 项目画像 PROJECT.md\n{profile_block}\n\n"
         f"## 联网搜索结果\n{_format_web_section(web_hits, web_gather)}\n\n"
         f"## 平台已有相似项目模板\n{_format_local_section(root, description)}\n\n"
+        f"## 可选岗位目录（recommended_roles 只能从中选 id）\n{role_catalog}\n\n"
         f"## 要求\n"
         f"1. technologies 为主选技术栈，technologies_alternate 为备选方案\n"
         f"2. domain 为业务域（如：休闲游戏、电商、企业内部工具）\n"
         f"3. 列出相似产品或开源实现（没有则写空数组）\n"
         f"4. 判断是否与平台存档模板相似（similar_local_template）\n"
-        f"5. recommended_template 必须从：{template_ids}\n"
-        f"6. summary 用中文，说明推荐理由与不确定项\n\n"
+        f"5. recommended_roles：根据项目实际需要勾选岗位 id 列表，必须含 laowang\n"
+        f"6. recommended_template：参考用，从 {template_ids} 中选最接近的一项\n"
+        f"7. summary 用中文，说明推荐理由与不确定项\n\n"
         f"在回复末尾输出 JSON（严格遵守格式）：\n"
         f"{RESEARCH_MARKER}\n"
         f'{{"technologies":["..."],"technologies_alternate":["..."],"domain":"...",'
         f'"similar_products":[{{"name":"...","note":"..."}}],'
-        f'"similar_local_template":null,"recommended_template":"web-fullstack",'
+        f'"similar_local_template":null,'
+        f'"recommended_roles":["laowang","xiaohong","dazhuang","xiaoyan"],'
+        f'"recommended_template":"web-fullstack",'
         f'"summary":"..."}}'
     )
 
@@ -254,6 +311,7 @@ def _offline_synthesize(
     tpl = infer_org_template(combined)
     similar = find_similar_template(description, root) if root else None
     local_id = str(similar.get("id")) if similar else None
+    roles = list(ORG_TEMPLATES.get(tpl, ORG_TEMPLATES["web-fullstack"])["roles"])
 
     # 从搜索结果标题提取「相似产品」
     products: list[dict[str, str]] = []
@@ -280,6 +338,7 @@ def _offline_synthesize(
         similar_products=products,
         similar_local_template=local_id,
         recommended_template=tpl,
+        recommended_roles=roles,
         summary=summary,
         source="offline",
         web_hits=web_hits,
@@ -339,10 +398,20 @@ def format_report_for_ui(report: ResearchReport) -> str:
         [
             "",
             f"[bold]推荐组织[/] {template_label(report.recommended_template)}",
-            "",
-            report.summary or "",
         ]
     )
+    if report.recommended_roles:
+        from core.project import get_role_catalog
+
+        catalog = get_role_catalog()
+        role_labels = [
+            f"{catalog[r]['name']}({r})"
+            for r in report.recommended_roles
+            if r in catalog
+        ]
+        lines.extend(["", "[bold]推荐岗位[/] " + " · ".join(role_labels)])
+
+    lines.extend(["", report.summary or ""])
 
     if report.web_hits and report.source in ("agent", "local"):
         lines.extend(["", "[dim]--- 检索来源 ---[/]"])
@@ -458,6 +527,7 @@ def report_to_result_dict(report: ResearchReport) -> dict[str, Any]:
     return {
         "summary": format_report_for_ui(report),
         "recommended_template": report.recommended_template,
+        "recommended_roles": report.recommended_roles,
         "source": report.source,
         "technologies": report.technologies,
         "technologies_alternate": report.technologies_alternate,

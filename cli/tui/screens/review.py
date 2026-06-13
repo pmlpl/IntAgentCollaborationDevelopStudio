@@ -31,9 +31,11 @@ class ReviewScreen(Screen):
         yield Header(show_clock=True)
         yield Vertical(
             Static("[bold]CEO 审批[/]", classes="title-text"),
+            Static("[dim]↑↓ 选中 · A 通过 · X 打回 · Esc 返回[/]", classes="page-hint"),
             ListView(id="review-list"),
             Static("", id="review-checklist", classes="panel-box muted"),
             id="review-box",
+            classes="page-shell page-body",
         )
         yield Footer()
 

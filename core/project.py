@@ -630,11 +630,7 @@ def delete_project(
 ) -> None:
     """从 registry 移除项目，并删除 registry 中登记的项目文件夹。
 
-    安全措施：
-    1. 拒绝删除 Studio 平台根目录
-    2. 拒绝删除用户主目录或桌面等系统关键路径
-    3. 删除前备份 positions.yaml 到 projects/.backups/
-    4. 仅允许删除 projects/ 子目录或 registry 登记的路径
+    顺序：先校验并删文件夹，再从 registry 移除，避免删文件夹失败时列表仍显示。
     """
     entry = get_registry_entry(root, project_id)
     project_root: Path | None = None
@@ -645,6 +641,15 @@ def delete_project(
         if legacy.exists():
             project_root = legacy
 
+    if remove_folder and project_root:
+        studio_root = get_studio_root().resolve()
+        if project_root == studio_root:
+            raise ValueError("不能删除 Studio 平台根目录")
+        _assert_safe_delete_path(project_root, studio_root)
+        _backup_before_delete(project_root, project_id, studio_root)
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
     data = load_registry(root)
     projects = [p for p in data.get("projects", []) if p.get("id") != project_id]
     data["projects"] = projects
@@ -653,23 +658,6 @@ def delete_project(
     current_file = current_project_file(root)
     if current_file.exists() and current_file.read_text(encoding="utf-8").strip() == project_id:
         current_file.unlink(missing_ok=True)
-
-    if not remove_folder or not project_root:
-        return
-
-    studio_root = get_studio_root().resolve()
-    if project_root == studio_root:
-        raise ValueError("不能删除 Studio 平台根目录")
-
-    # 安全检查：拒绝删除系统关键路径
-    _assert_safe_delete_path(project_root, studio_root)
-
-    # 备份 positions.yaml 到安全位置
-    _backup_before_delete(project_root, project_id, studio_root)
-
-    if not project_root.exists():
-        return
-    shutil.rmtree(project_root)
 
 
 _SAFE_DELETE_BLOCKED: set[Path] | None = None
@@ -694,37 +682,26 @@ def _get_safe_delete_blocked() -> set[Path]:
 
 
 def _assert_safe_delete_path(target: Path, studio_root: Path) -> None:
-    """校验目标路径不是系统关键目录。允许临时/测试目录。"""
+    """校验目标路径可安全删除。允许 studio 在 Desktop 下时删除 projects/ 子目录。"""
     target = target.resolve()
     target_str = str(target).lower()
 
-    # 允许测试临时目录（pytest tmp_path）
     if "pytest" in target_str and "tmp" in target_str:
         return
-    if "temp" in target_str:
+    if "temp" in target_str and "pytest" in target_str:
         return
 
-    # 必须在 studio_root/projects 下，或者是 studio_root 明确登记的项目路径
-    projects_dir = studio_root / "projects"
+    projects_dir = (studio_root / "projects").resolve()
     try:
         target.relative_to(projects_dir)
+        return
     except ValueError:
-        raise ValueError(
-            f"拒绝删除：路径 {target} 不在 projects/ 目录下。"
-            f"若要删除此项目，请手动删除文件夹后再用 'studio project delete --yes' 清理 registry。"
-        )
+        pass
 
-    for blocked in _get_safe_delete_blocked():
-        try:
-            target.relative_to(blocked)
-            raise ValueError(
-                f"拒绝删除：路径 {target} 位于受保护目录 "
-                f"{blocked} 下，可能是系统关键路径。"
-            )
-        except ValueError as exc:
-            if "拒绝删除" in str(exc):
-                raise
-            continue
+    raise ValueError(
+        f"拒绝删除：路径 {target} 不在平台 projects/ 目录下。"
+        f"请手动删除文件夹，或在项目中心仅清理 registry。"
+    )
 
 
 def _backup_before_delete(target: Path, project_id: str, studio_root: Path) -> None:

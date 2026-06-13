@@ -1,8 +1,8 @@
-# cli/tui/screens/expand.py — 指挥舱：扩建公司向导
+# cli/tui/screens/expand.py — 扩建公司向导（统一全屏布局）
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Select, Static
 
@@ -23,13 +23,14 @@ class ExpandScreen(Screen):
 
     BINDINGS = [
         ("escape", "back", "返回"),
+        ("ctrl+enter", "primary_action", "继续"),
     ]
 
     def __init__(self, project_name: str | None = None) -> None:
         super().__init__()
         self.project_name = project_name
         self._mode = ""
-        self._step = 0
+        self._panel = "mode"
         self._description = ""
         self._research_text = ""
         self._roles_to_add: list[str] = []
@@ -39,63 +40,65 @@ class ExpandScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Vertical(
-            Static("[bold]扩建公司[/]", classes="title-text"),
-            Static("", id="expand-step-indicator", classes="muted"),
-            Static("", id="expand-status", classes="muted"),
-            # 选模式
+        yield Container(
             Vertical(
-                Static("选择扩建类型", classes="muted"),
-                Button("1. 开新业务线（调研 + 加岗位）", variant="primary", id="btn-mode-business"),
-                Button("2. 加管理层（插入主管）", id="btn-mode-manager"),
-                Button("3. 部门内加人", id="btn-mode-role"),
-                id="panel-mode",
-            ),
-            # 新业务线：描述
-            Vertical(
-                Static("新业务描述", classes="muted"),
-                Input(placeholder="例如：开发微信小程序", id="business-desc"),
-                Horizontal(
-                    Button("上一步", id="btn-business-back1"),
-                    Button("下一步：调研", variant="primary", id="btn-business-next1"),
+                Static("[bold]扩建公司[/]", classes="title-text"),
+                Static("", id="expand-step-indicator", classes="muted"),
+                Static("", id="expand-status", classes="muted"),
+                Vertical(
+                    Static("选择扩建类型", classes="accent"),
+                    Select(
+                        [
+                            ("开新业务线（调研 + 加岗位）", "business"),
+                            ("加管理层（插入主管）", "manager"),
+                            ("部门内加人", "role"),
+                        ],
+                        id="expand-mode",
+                    ),
+                    id="panel-mode",
+                    classes="page-step",
                 ),
-                id="panel-business-1",
-            ),
-            # 新业务线：调研结果
-            Vertical(
-                Static("", id="business-research", classes="panel-box"),
-                Static("", id="business-roles-preview"),
-                Horizontal(
-                    Button("上一步", id="btn-business-back2"),
-                    Button("确认扩建", variant="success", id="btn-business-confirm"),
+                Vertical(
+                    Static("新业务描述", classes="accent"),
+                    Input(placeholder="例如：开发微信小程序", id="business-desc"),
+                    id="panel-business-1",
+                    classes="page-step",
                 ),
-                id="panel-business-2",
-            ),
-            # 部门内加人
-            Vertical(
-                Static("选择岗位与上级", classes="muted"),
-                Select([], id="role-pick"),
-                Select([], id="role-parent"),
-                Horizontal(
-                    Button("上一步", id="btn-role-back"),
-                    Button("确认添加", variant="success", id="btn-role-confirm"),
+                Vertical(
+                    VerticalScroll(
+                        Static("", id="business-research", classes="panel-box"),
+                        Static("", id="business-roles-preview"),
+                        id="business-research-scroll",
+                        classes="page-scroll",
+                    ),
+                    id="panel-business-2",
+                    classes="page-step",
                 ),
-                id="panel-role",
-            ),
-            # 加管理层
-            Vertical(
-                Static("选择改由新主管管理的下属（勾选）", classes="muted"),
-                VerticalScroll(id="manager-children-box"),
-                Input(placeholder="新主管 id（英文，如 frontend-lead）", id="manager-id"),
-                Input(placeholder="花名（如 前端组长）", id="manager-name"),
-                Select([], id="manager-reports-to"),
-                Horizontal(
-                    Button("上一步", id="btn-manager-back"),
-                    Button("确认创建", variant="success", id="btn-manager-confirm"),
+                Vertical(
+                    Static("选择岗位与上级", classes="accent"),
+                    Select([], id="role-pick"),
+                    Select([], id="role-parent"),
+                    id="panel-role",
+                    classes="page-step",
                 ),
-                id="panel-manager",
+                Vertical(
+                    Static("选择改由新主管管理的下属（勾选）", classes="accent"),
+                    VerticalScroll(id="manager-children-box", classes="page-scroll"),
+                    Input(placeholder="新主管 id（英文，如 frontend-lead）", id="manager-id"),
+                    Input(placeholder="花名（如 前端组长）", id="manager-name"),
+                    Select([], id="manager-reports-to"),
+                    id="panel-manager",
+                    classes="page-step",
+                ),
+                classes="page-body",
+            ),
+            Static("", id="page-hint", classes="page-hint"),
+            Horizontal(
+                Button("继续", variant="primary", id="btn-primary"),
+                classes="page-actions",
             ),
             id="expand-container",
+            classes="page-shell",
         )
         yield Footer()
 
@@ -117,8 +120,37 @@ class ExpandScreen(Screen):
         prefix = "[red]" if error else "[dim]"
         self.query_one("#expand-status", Static).update(f"{prefix}{message}[/]")
 
+    def _update_panel_chrome(self) -> None:
+        """统一步骤提示与主按钮文案。"""
+        hints = {
+            "mode": "Ctrl+Enter 进入所选类型 · Esc 返回指挥舱",
+            "business-1": "Ctrl+Enter 开始调研 · Esc 上一步",
+            "business-2": "Ctrl+Enter 确认扩建 · Esc 上一步",
+            "role": "Ctrl+Enter 确认添加 · Esc 上一步",
+            "manager": "Ctrl+Enter 确认创建 · Esc 上一步",
+        }
+        labels = {
+            "mode": "继续",
+            "business-1": "开始调研",
+            "business-2": "确认扩建",
+            "role": "确认添加",
+            "manager": "确认创建",
+        }
+        variants = {
+            "mode": "primary",
+            "business-1": "primary",
+            "business-2": "success",
+            "role": "success",
+            "manager": "success",
+        }
+        self.query_one("#page-hint", Static).update(f"[dim]{hints[self._panel]}[/]")
+        btn = self.query_one("#btn-primary", Button)
+        btn.label = labels[self._panel]
+        btn.variant = variants[self._panel]
+        btn.disabled = False
+
     def _show_panel(self, panel: str) -> None:
-        """切换可见面板。"""
+        self._panel = panel
         panels = {
             "mode": "panel-mode",
             "business-1": "panel-business-1",
@@ -135,7 +167,10 @@ class ExpandScreen(Screen):
             "role": "部门内加人",
             "manager": "加管理层",
         }
-        self.query_one("#expand-step-indicator", Static).update(labels.get(panel, ""))
+        self.query_one("#expand-step-indicator", Static).update(f"步骤 · {labels.get(panel, '')}")
+        self._update_panel_chrome()
+        if panel == "business-1":
+            self.query_one("#business-desc", Input).focus()
 
     def _position_options(self) -> list[tuple[str, str]]:
         return [
@@ -182,6 +217,22 @@ class ExpandScreen(Screen):
         ]
         if mgr_opts:
             reports.set_options(mgr_opts)
+
+    def _enter_mode(self) -> None:
+        mode = str(self.query_one("#expand-mode", Select).value or "")
+        if mode == "business":
+            self._mode = "business"
+            self._show_panel("business-1")
+        elif mode == "manager":
+            self._mode = "manager"
+            self._rebuild_manager_panel()
+            self._show_panel("manager")
+        elif mode == "role":
+            self._mode = "role"
+            self._rebuild_role_selects()
+            self._show_panel("role")
+        else:
+            self._set_status("请选择扩建类型", error=True)
 
     def _run_business_research(self) -> None:
         desc = self.query_one("#business-desc", Input).value.strip() or "新业务"
@@ -282,35 +333,29 @@ class ExpandScreen(Screen):
         self.dismiss(True)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id
-        if bid == "btn-mode-business":
-            self._mode = "business"
-            self._show_panel("business-1")
-            self.query_one("#business-desc", Input).focus()
-        elif bid == "btn-mode-role":
-            self._mode = "role"
-            self._rebuild_role_selects()
-            self._show_panel("role")
-        elif bid == "btn-mode-manager":
-            self._mode = "manager"
-            self._rebuild_manager_panel()
-            self._show_panel("manager")
-        elif bid == "btn-business-back1":
-            self._show_panel("mode")
-        elif bid == "btn-business-next1":
+        if event.button.id == "btn-primary":
+            self.action_primary_action()
+
+    def action_primary_action(self) -> None:
+        if self.query_one("#btn-primary", Button).disabled:
+            return
+        if self._panel == "mode":
+            self._enter_mode()
+        elif self._panel == "business-1":
             self._run_business_research()
-        elif bid == "btn-business-back2":
-            self._show_panel("business-1")
-        elif bid == "btn-business-confirm":
+        elif self._panel == "business-2":
             self._apply_business()
-        elif bid == "btn-role-back":
-            self._show_panel("mode")
-        elif bid == "btn-role-confirm":
+        elif self._panel == "role":
             self._apply_role()
-        elif bid == "btn-manager-back":
-            self._show_panel("mode")
-        elif bid == "btn-manager-confirm":
+        elif self._panel == "manager":
             self._apply_manager()
 
     def action_back(self) -> None:
-        self.dismiss(False)
+        if self._panel == "mode":
+            self.dismiss(False)
+        elif self._panel == "business-1":
+            self._show_panel("mode")
+        elif self._panel == "business-2":
+            self._show_panel("business-1")
+        elif self._panel in ("role", "manager"):
+            self._show_panel("mode")

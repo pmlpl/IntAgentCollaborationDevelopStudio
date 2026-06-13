@@ -11,25 +11,44 @@ import yaml
 from core.org.tree_ops import OrgTree, OrgTreeError
 
 
+def _resolve_positions_path(project_dir: Path) -> Path:
+    """定位 positions.yaml：优先 .studio/ 新布局，降级到旧布局。"""
+    new_path = project_dir / ".studio" / "positions.yaml"
+    if new_path.exists():
+        return new_path
+    legacy_path = project_dir / "positions.yaml"
+    if legacy_path.exists():
+        return legacy_path
+    # 默认返回 .studio/ 路径（写入时创建）
+    return new_path
+
+
+def _resolve_snapshot_path(project_dir: Path) -> Path:
+    """定位 org.snapshot.yaml，跟随 positions.yaml 所在目录。"""
+    pos = _resolve_positions_path(project_dir)
+    return pos.parent / "org.snapshot.yaml"
+
+
 def load_positions_data(project_dir: Path) -> dict[str, Any]:
-    """读取 positions.yaml。"""
-    path = project_dir / "positions.yaml"
+    """读取 positions.yaml（兼容新旧布局）。"""
+    path = _resolve_positions_path(project_dir)
     if not path.exists():
-        raise FileNotFoundError(f"positions.yaml not found: {path}")
+        raise FileNotFoundError(f"positions.yaml not found in {project_dir}")
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def save_positions_data(project_dir: Path, data: dict[str, Any], *, reason: str = "") -> Path:
     """校验并写入 positions.yaml，追加 org.snapshot 审计。"""
     OrgTree.from_yaml_data(data)
-    path = project_dir / "positions.yaml"
+    path = _resolve_positions_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     _append_snapshot(project_dir, data, reason=reason)
     return path
 
 
 def _append_snapshot(project_dir: Path, data: dict[str, Any], *, reason: str) -> None:
-    snap_path = project_dir / "org.snapshot.yaml"
+    snap_path = _resolve_snapshot_path(project_dir)
     history: list[dict[str, Any]] = []
     if snap_path.exists():
         raw = yaml.safe_load(snap_path.read_text(encoding="utf-8")) or {}

@@ -5,10 +5,31 @@ from typing import Any
 
 from core.runtime.state import AgentRuntimeState
 
+_STATUS_ICONS = {
+    "pending": "[dim]○[/]",
+    "assigned": "[dim]○[/]",
+    "in_progress": "[bold yellow]▶[/]",
+    "blocked": "[bold red]⊗[/]",
+    "submitted": "[cyan]◆[/]",
+    "in_review": "[bold cyan]◆[/]",
+    "approved": "[bold green]✓[/]",
+    "rejected": "[bold red]✗[/]",
+    "escalated": "[bold magenta]↑[/]",
+    "archived": "[dim]📦[/]",
+}
+
+
+def _status_icon(status: str) -> str:
+    return _STATUS_ICONS.get(status, "[dim]?[/]")
+
 
 def _bar(progress: int) -> str:
     filled = max(0, min(10, progress // 10))
-    return "█" * filled + "░" * (10 - filled)
+    if filled == 0:
+        return "[dim]" + "░" * 10 + "[/]"
+    if filled == 10:
+        return "[bold green]" + "█" * 10 + "[/]"
+    return "[bold green]" + "█" * filled + "[/][dim]" + "░" * (10 - filled) + "[/]"
 
 
 def render_task_panel(
@@ -20,17 +41,20 @@ def render_task_panel(
 ) -> str:
     lines = ["[bold cyan]任务与进度[/]", ""]
     if not tasks:
-        lines.append("[dim]暂无任务。按 N 下达新任务。[/]")
+        lines.append("[dim]暂无任务。[/]")
+        lines.append("[dim]按 N 下达新任务。[/]")
     for t in tasks:
         if t.get("parent_id"):
             continue
-        desc = t.get("description", "")[:50]
+        desc = t.get("description", "")[:48]
         tid = t.get("id")
+        status = str(t.get("status", ""))
+        icon = _status_icon(status)
         if highlight_task_id and tid == highlight_task_id:
-            lines.append(f"▸ [bold reverse]{desc}[/]")
+            lines.append(f"{icon} [bold reverse]{desc}[/]")
         else:
-            lines.append(f"▸ {desc}")
-        lines.append(f"  状态: [yellow]{t.get('status')}[/]  id={tid}")
+            lines.append(f"{icon} {desc}")
+        lines.append(f"   [dim]{status}[/]  [dim]id={tid}[/]")
         lines.append("")
     if highlight_task_id:
         subs = [t for t in tasks if t.get("parent_id") == highlight_task_id]
@@ -38,8 +62,9 @@ def render_task_panel(
             lines.append("[bold]子任务[/]")
             for st in subs:
                 assignee = st.get("assignee", "?")
+                icon = _status_icon(str(st.get("status", "")))
                 lines.append(
-                    f"  · [{st.get('status')}] {assignee}: "
+                    f"  {icon} [dim]{assignee}:[/] "
                     f"{st.get('description', '')[:36]}"
                 )
             lines.append("")

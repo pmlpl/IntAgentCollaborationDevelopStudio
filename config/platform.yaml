@@ -26,6 +26,16 @@ orchestration:
 research:
   mode: agent
   agent: opencode
+  lmstudio:
+    base_url: http://127.0.0.1:1234/v1
+    api_key: ''
+    model: local-model
+    temperature: 0.3
+    timeout_sec: 120
+  ollama:
+    base_url: http://127.0.0.1:11434
+    model: qwen2.5:7b
+    timeout_sec: 120
   search_providers:
   - github
   - bing

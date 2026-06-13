@@ -29,3 +29,6 @@ include = ["core*", "agents*", "cli*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: 集成测试（含 Textual Pilot 真挂载）",
+]

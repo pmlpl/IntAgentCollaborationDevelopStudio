@@ -38,10 +38,13 @@ def _http_json(
     method: str = "GET",
     payload: dict[str, Any] | None = None,
     timeout: int = 30,
+    api_key: str | None = None,
 ) -> tuple[int, dict[str, Any] | str]:
     """发起 JSON HTTP 请求，成功返回 (0, dict)，失败返回 (1, 错误信息)。"""
     data = None
     headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -90,6 +93,7 @@ def run_lmstudio_prompt_capture(
             "stream": False,
         },
         timeout=timeout,
+        api_key=str(cfg.get("api_key") or "").strip() or None,
     )
     if rc != 0:
         return 1, f"LM Studio 连接失败: {raw}"

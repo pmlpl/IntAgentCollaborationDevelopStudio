@@ -10,7 +10,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Select, Static
 
 from core.config.catalog import load_agents, load_models
+from core.config.select_helpers import safe_select_value
 from core.project import get_studio_root
+
+# 汇报上级：Select 用内部 sentinel，避免 Select.NULL / "null" 键错误
+_PARENT_TOP = "__top__"
 
 
 class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
@@ -25,8 +29,8 @@ class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
         height: auto;
         max-height: 90%;
         padding: 1 2;
-        border: round #89b4fa;
-        background: #181825;
+        border: solid #58a6ff;
+        background: #0f1729;
     }
     """
 
@@ -35,6 +39,8 @@ class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
         self._positions = deepcopy(positions)
         self._overrides: dict[str, dict[str, Any]] = {}
         self._index = 0
+        self._agent_options: list[tuple[str, str]] = []
+        self._model_options: list[tuple[str, str]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="pos-edit-box", classes="panel-box"):
@@ -59,11 +65,32 @@ class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
 
     def on_mount(self) -> None:
         root = get_studio_root()
-        agents = load_agents(root)
-        models = load_models(root)
-        self.query_one("#agent-select", Select).set_options(agents)
-        self.query_one("#model-select", Select).set_options(models)
+        self._agent_options = list(load_agents(root))
+        self._model_options = list(load_models(root))
+        self.query_one("#agent-select", Select).set_options(self._agent_options)
+        self.query_one("#model-select", Select).set_options(self._model_options)
         self._load_position(0)
+
+    def _ensure_agent_option(self, agent_id: str) -> None:
+        """岗位已有 agent 不在列表时补一项（例如策略过滤后仍要显示当前值）。"""
+        if not agent_id:
+            return
+        ids = {v for _, v in self._agent_options}
+        if agent_id in ids:
+            return
+        label = f"{agent_id}（当前）"
+        self._agent_options.append((label, agent_id))
+        self.query_one("#agent-select", Select).set_options(self._agent_options)
+
+    def _ensure_model_option(self, model_id: str) -> None:
+        if not model_id:
+            return
+        ids = {v for _, v in self._model_options}
+        if model_id in ids:
+            return
+        label = f"{model_id}（当前）"
+        self._model_options.append((label, model_id))
+        self.query_one("#model-select", Select).set_options(self._model_options)
 
     def _current(self) -> dict[str, Any]:
         return self._positions[self._index]
@@ -71,18 +98,19 @@ class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
     def _save_current_to_overrides(self) -> None:
         pos = self._current()
         pid = pos["id"]
+        agent_val = self.query_one("#agent-select", Select).value
+        model_val = self.query_one("#model-select", Select).value
         self._overrides[pid] = {
             "name": self.query_one("#name-input", Input).value.strip(),
             "title": self.query_one("#title-input", Input).value.strip(),
-            "agent": str(self.query_one("#agent-select", Select).value or pos.get("agent")),
-            "model": str(self.query_one("#model-select", Select).value or pos.get("model")),
+            "agent": str(agent_val) if agent_val not in (None, Select.BLANK) else pos.get("agent"),
+            "model": str(model_val) if model_val not in (None, Select.BLANK) else pos.get("model"),
         }
-        parent = self._parent_value()
-        self._overrides[pid]["parent"] = parent
+        self._overrides[pid]["parent"] = self._parent_value()
 
     def _parent_value(self) -> str | None:
         val = self.query_one("#parent-select", Select).value
-        if val is Select.BLANK or val is None or val == "null":
+        if val in (None, Select.BLANK, _PARENT_TOP):
             return None
         return str(val)
 
@@ -99,12 +127,14 @@ class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
         self.query_one("#name-input", Input).value = str(merged.get("name") or "")
         self.query_one("#title-input", Input).value = str(merged.get("title") or "")
 
-        agent_sel = self.query_one("#agent-select", Select)
-        model_sel = self.query_one("#model-select", Select)
-        agent_sel.value = merged.get("agent") or Select.BLANK
-        model_sel.value = merged.get("model") or Select.BLANK
+        agent_id = str(merged.get("agent") or "")
+        model_id = str(merged.get("model") or "")
+        self._ensure_agent_option(agent_id)
+        self._ensure_model_option(model_id)
+        safe_select_value(self.query_one("#agent-select", Select), agent_id or None)
+        safe_select_value(self.query_one("#model-select", Select), model_id or None)
 
-        parent_opts: list[tuple[str, str | None]] = [("无（顶层主管）", "null")]
+        parent_opts: list[tuple[str, str]] = [("无（顶层主管）", _PARENT_TOP)]
         for p in self._positions:
             if p["id"] == pid:
                 continue
@@ -113,7 +143,7 @@ class PositionEditorModal(ModalScreen[dict[str, dict[str, Any]] | None]):
         parent_sel = self.query_one("#parent-select", Select)
         parent_sel.set_options(parent_opts)
         parent = merged.get("parent")
-        parent_sel.value = "null" if parent is None else str(parent)
+        safe_select_value(parent_sel, _PARENT_TOP if parent is None else str(parent))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":

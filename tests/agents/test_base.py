@@ -22,7 +22,7 @@ def test_build_command_claude_code_skills_not_in_argv():
     )
     assert "-s" not in cmd
     assert "--mcp" not in cmd
-    assert cmd == ["claude", "-p", "hello"]
+    assert cmd == ["claude", "-p", "--dangerously-skip-permissions", "hello"]
 
 
 def test_build_interactive_command_claude_no_print_flag():

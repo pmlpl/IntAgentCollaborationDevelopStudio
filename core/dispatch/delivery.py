@@ -89,14 +89,19 @@ def infer_run_command(worktree: Path, deliver: dict[str, Any]) -> str:
 
 
 def run_deliver_command(worktree: Path, command: str) -> tuple[int, str]:
-    """在 worktree 内执行交付声明的运行命令。"""
+    """在 worktree 内执行交付声明的运行命令（无 shell，安全拆分参数）。"""
     if not command.strip():
         return -1, "未提供 run_command"
+
+    # 安全拆分 command 字符串为 argv（避免 shell=True 注入风险）
+    argv = _safe_parse_command(command)
+    if not argv:
+        return -1, "无法解析 run_command"
+
     try:
         result = subprocess.run(
-            command,
+            argv,
             cwd=worktree,
-            shell=True,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -109,6 +114,31 @@ def run_deliver_command(worktree: Path, command: str) -> tuple[int, str]:
         return -1, "运行超时（120s）"
     except OSError as exc:
         return -1, str(exc)
+
+
+def _safe_parse_command(command: str) -> list[str] | None:
+    """将 shell 命令字符串安全拆分为 argv 列表。
+
+    仅支持简单的 command arg1 arg2... 格式；
+    不支持管道、重定向等 shell 特性（这些本就不该出现在 DELIVER.json 中）。
+    返回 None 表示命令格式不安全。
+    """
+    import shlex
+
+    # 拒绝明显危险的 shell 元字符
+    dangerous = {"|", ";", "&", "`", "$(", "${", "<", ">", "&&", "||"}
+    for ch in dangerous:
+        if ch in command:
+            return None
+
+    try:
+        argv = shlex.split(command.strip())
+    except ValueError:
+        return None
+
+    if not argv:
+        return None
+    return argv
 
 
 def build_ceo_dispatch_brief(goal: str, notes: str = "") -> str:
@@ -163,13 +193,22 @@ def process_worker_delivery(
     *,
     manager_id: str,
 ) -> dict[str, Any]:
-    """Worker 交付 → 运行验证 → 待主管审查。"""
+    """Worker 交付 → 运行验证 → 待主管审查。
+
+    防御：空交付（无文件/无摘要/无 run_command）不推断执行命令，
+    避免误运行 curses 等终端交互程序破坏 TUI。
+    """
     task_id = str(task.get("id") or deliver.get("task_id") or "")
     assignee = str(
         task.get("assignee") or deliver.get("assignee") or deliver.get("worker") or ""
     )
 
-    run_cmd = infer_run_command(worktree, deliver)
+    has_files = bool(deliver.get("files") or [])
+    has_summary = bool(str(deliver.get("summary") or "").strip())
+    has_explicit_run = bool(str(deliver.get("run_command") or "").strip())
+    is_empty_deliver = not has_files and not has_summary and not has_explicit_run
+
+    run_cmd = "" if is_empty_deliver else infer_run_command(worktree, deliver)
     exit_code = -1
     run_output = ""
     if run_cmd:
@@ -390,12 +429,20 @@ def refresh_delivery_verification(
     *,
     project_root: Path | None = None,
 ) -> dict[str, Any] | None:
-    """对已登记但尚未成功跑验证的交付记录补跑 run_command。"""
+    """对已登记但尚未成功跑验证的交付记录补跑 run_command。
+
+    防御：空记录 / 无实质交付内容时不重跑，避免触发终端交互程序。
+    """
     record = load_delivery_record(project_dir, task_id)
     if not record or record.get("exit_code", -1) >= 0:
         return record
-    worktree = (project_root or project_dir.parent).resolve()
     run_cmd = str(record.get("run_command") or "").strip()
+    # 若记录无实质内容（无文件/无摘要/无 run_command），不回补执行
+    has_files = bool(record.get("files") or [])
+    has_summary = bool(str(record.get("summary") or "").strip())
+    if not run_cmd and not has_files and not has_summary:
+        return record
+    worktree = (project_root or project_dir.parent).resolve()
     if not run_cmd:
         deliver_stub = {
             "files": record.get("files") or [],

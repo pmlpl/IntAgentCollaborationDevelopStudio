@@ -1,13 +1,15 @@
 # config/agents.yaml — 终端 Agent CLI（非 IDE）
 # 安装说明见 docs/INSTALL-AGENTS.md；检测：python -m cli.studio agent status
 # byok: true = 可接 DeepSeek / Ollama / LM Studio 等第三方模型（无需厂商订阅）
+# model: 启动时自动传入，跳过 Agent 自身的模型选择对话框
+# env:   启动时注入的环境变量（如 API Key 提示，实际 Key 由用户在 Agent 终端内配置）
 agents:
   claude-code:
     name: Claude Code
     command: claude
     byok: false
     flags: "-p"
-    flags_interactive: ""
+    flags_interactive: "--dangerously-skip-permissions"
     interactive:
       mode: append_system_prompt_file
     strengths: [复杂推理, 任务拆解, 技术决策, 全栈]
@@ -46,10 +48,13 @@ agents:
     command: hermes
     byok: true
     flags: "chat -q"
-    flags_interactive: "chat --tui"
+    flags_interactive: "chat --tui --yes"
     interactive:
       mode: task_file_context
       # 任务注入：.hermes.md + AGENTS.md + HERMES_TUI_QUERY（见 agent_launcher）
+    # Hermes 从 ~/.config/hermes/config.yaml 读取模型；此处 env 仅补提示
+    env:
+      HERMES_DEFAULT_MODEL: deepseek-v4-pro
     strengths: [持久记忆, 文档, 配置, 小程序]
     works_with: [deepseek-v4-pro, qwen, ollama]
     roles: [后端开发, 文档, 小程序]
@@ -59,7 +64,7 @@ agents:
     command: aider
     byok: true
     flags: "--message"
-    flags_interactive: ""
+    flags_interactive: "--model deepseek/deepseek-chat --yes"
     interactive:
       mode: task_file_context
     strengths: [Git提交, 代码审查, 可回滚, 结对编程]
@@ -71,7 +76,7 @@ agents:
     command: opencode
     byok: true
     flags: "run"
-    flags_interactive: ""
+    flags_interactive: "--model deepseek/deepseek-chat --yes"
     interactive:
       mode: run_interactive
     strengths: [多模型, 重构, 75+提供商]
@@ -83,7 +88,7 @@ agents:
     command: goose
     byok: true
     flags: "run"
-    flags_interactive: "session"
+    flags_interactive: "session --yes"
     interactive:
       mode: task_file_context
     strengths: [脚手架, 工作流, MCP扩展, 架构]

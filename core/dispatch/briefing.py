@@ -209,6 +209,21 @@ def detail_brief_questions(
     return [q for q in generate_brief_questions(profile, project_description) if q.id != "first_delivery"]
 
 
+def render_dispatch_compact_line(profile: ProjectProfile | None, description: str) -> str:
+    """下达任务弹窗用的一行项目摘要（省垂直空间）。"""
+    desc = (description or "").strip()
+    if profile and profile.description:
+        desc = profile.description.strip()
+    label = (desc[:36] + "…") if len(desc) > 36 else (desc or "未命名项目")
+    extras: list[str] = []
+    if profile and profile.org_template:
+        extras.append(f"模板 {profile.org_template}")
+    if profile and profile.domain:
+        extras.append(profile.domain)
+    tail = f" · {' · '.join(extras)}" if extras else ""
+    return f"[dim]项目：[/]{label}{tail}"
+
+
 def render_dispatch_intro(profile: ProjectProfile | None, description: str) -> str:
     """下达任务第一步：项目概况。"""
     text = render_profile_summary(profile, description)

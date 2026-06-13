@@ -55,7 +55,7 @@ def test_build_command_skills_not_in_argv():
         worktree=".",
         skills=["fastapi-expert", "python-async"],
     )
-    assert cmd == ["hermes", "chat", "-q", "do work"]
+    assert cmd == ["hermes", "chat", "-q", "--yes", "do work"]
     assert "-s" not in cmd
 
 

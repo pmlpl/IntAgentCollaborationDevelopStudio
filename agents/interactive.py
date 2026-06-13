@@ -181,7 +181,10 @@ def format_worker_task_prompt(
     task_id: str = "",
     role: str = "",
 ) -> str:
-    """合并 CEO 澄清方案与子任务描述，写入 STUDIO_TASK.md。"""
+    """合并 CEO 澄清方案与子任务描述，写入 STUDIO_TASK.md。
+
+    包含已完成兄弟任务的摘要（项目记忆），帮助新 Worker 快速了解上下文。
+    """
     sections: list[str] = []
     if project_dir is not None:
         from core.dispatch.briefing import ceo_context_for_workers
@@ -189,6 +192,66 @@ def format_worker_task_prompt(
         ceo_ctx = ceo_context_for_workers(project_dir)
         if ceo_ctx:
             sections.append(f"## CEO 已确认总目标\n{ceo_ctx}")
+
+        # 累积已完成任务的摘要（项目记忆）
+        completed = _load_completed_sibling_summaries(project_dir, task_id)
+        if completed:
+            sections.append(f"## 团队已完成的工作\n{completed}")
+
     sections.append(f"## 本子任务\n{subtask_description.strip()}")
     body = "\n\n".join(sections)
     return format_task_prompt(body, task_id=task_id, role=role)
+
+
+def _load_completed_sibling_summaries(project_dir: Path, current_task_id: str) -> str:
+    """读取当前编排中已完成子任务的交付摘要，累积为项目记忆。
+
+    最多返回 1500 字符，避免撑爆 Agent 上下文窗口。
+    """
+    import json as _json
+
+    lines: list[str] = []
+    active_dir = project_dir / "tasks" / "active"
+    if not active_dir.is_dir():
+        return ""
+
+    # 收集已归档/已审批的任务
+    archive_dir = project_dir / "tasks" / "archive"
+    archived_summaries: list[tuple[str, str]] = []
+    if archive_dir.is_dir():
+        for path in sorted(archive_dir.glob("*.yaml")):
+            try:
+                import yaml as _yaml
+                t = _yaml.safe_load(path.read_text(encoding="utf-8"))
+                tid = str(t.get("id") or "")
+                summary = str(t.get("review_comment") or t.get("description") or "")
+                if tid and summary:
+                    archived_summaries.append((tid, summary[:200]))
+            except Exception:
+                pass
+
+    # 收集进行中但已有交付记录的任务
+    delivery_summaries: list[tuple[str, str]] = []
+    for path in sorted(active_dir.glob(".delivery-*.json")):
+        try:
+            rec = _json.loads(path.read_text(encoding="utf-8"))
+            tid = str(rec.get("task_id") or "")
+            summary = str(rec.get("summary") or "")
+            if tid and summary and tid != current_task_id:
+                exit_code = rec.get("exit_code", -1)
+                status_icon = "✓" if exit_code == 0 else "✗"
+                delivery_summaries.append((tid, f"[{status_icon}] {summary[:200]}"))
+        except Exception:
+            pass
+
+    if archived_summaries:
+        lines.append("已验收完成：")
+        for tid, summary in archived_summaries[:5]:
+            lines.append(f"  - {summary}")
+    if delivery_summaries:
+        lines.append("已完成交付（待主管验收）：")
+        for tid, summary in delivery_summaries[:5]:
+            lines.append(f"  - {summary}")
+
+    result = "\n".join(lines)
+    return result[:1500]

@@ -26,8 +26,22 @@ def test_offline_synthesize_snake_game():
     ]
     report = _offline_synthesize("贪吃蛇小游戏", hits, None)
     assert report.recommended_template in ("minimal", "web-fullstack", "multi-endpoint")
+    assert report.recommended_roles
+    assert "laowang" in report.recommended_roles
     assert report.similar_products
     assert "离线" in report.summary or report.source == "offline"
+
+
+def test_report_to_result_dict_includes_recommended_roles():
+    report = ResearchReport(
+        description="贪吃蛇",
+        recommended_template="minimal",
+        recommended_roles=["laowang", "dazhuang"],
+        summary="test",
+        source="offline",
+    )
+    result = report_to_result_dict(report)
+    assert result["recommended_roles"] == ["laowang", "dazhuang"]
 
 
 def test_format_report_shows_technologies():

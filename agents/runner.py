@@ -147,6 +147,7 @@ def run_position_task_capture(
         return 0, output
 
     cfg = load_agent_config(root, pos["agent"])
+    agent_id = str(pos.get("agent") or "")
     agent_command = str(cfg.get("command") or "")
     logical = build_command(
         cfg,
@@ -154,6 +155,7 @@ def run_position_task_capture(
         worktree=cwd,
         skills=skills,
         mcp_servers=mcp_servers,
+        agent_id=agent_id,
     )
     if agent_command == "opencode":
         logical = opencode_capture_argv(logical)
@@ -199,7 +201,9 @@ def run_agent_prompt_capture(
 
     cfg = load_agent_config(root, agent_key)
     agent_command = str(cfg.get("command") or "")
-    logical = build_command(cfg, task=prompt, worktree=workdir)
+    logical = build_command(
+        cfg, task=prompt, worktree=workdir, agent_id=agent_key
+    )
     if agent_command == "opencode":
         logical = opencode_capture_argv(logical)
     cmd = prepare_subprocess_argv(logical)

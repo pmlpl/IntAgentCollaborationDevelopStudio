@@ -18,8 +18,8 @@ class ConfirmModal(ModalScreen[bool]):
         width: 60;
         height: auto;
         padding: 1 2;
-        border: round #89b4fa;
-        background: #181825;
+        border: solid #58a6ff;
+        background: #0f1729;
     }
     """
 

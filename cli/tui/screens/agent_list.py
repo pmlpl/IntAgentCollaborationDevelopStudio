@@ -6,7 +6,8 @@ from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Container, Vertical, VerticalScroll
+from textual.binding import Binding
+from textual.containers import Container, Horizontal, Vertical
 from textual.events import Click
 from textual.screen import Screen
 from textual.widget import Widget
@@ -33,9 +34,9 @@ class AgentListScreen(Screen):
 
     BINDINGS = [
         ("enter", "activate_selected", "执行"),
-        ("e", "toggle_enabled", "启用/禁用"),
+        # priority=True: 确保 ListView 持有焦点时仍能捕获 e 键
+        Binding("e", "toggle_enabled", "启用/禁用", priority=True),
         ("r", "refresh", "刷新"),
-        ("tab", "focus_detail", "详情滚动"),
         ("escape", "back", "返回"),
         ("q", "quit", "退出"),
     ]
@@ -55,16 +56,23 @@ class AgentListScreen(Screen):
             Vertical(
                 Static("[bold]Agent 目录[/]", classes="title-text"),
                 Static("", id="agent-stats", classes="accent"),
-                ListView(id="agent-list"),
-                VerticalScroll(
-                    Static("", id="agent-detail"),
-                    id="agent-detail-scroll",
-                    classes="panel-box",
-                ),
                 Static("", id="agent-status", classes="muted"),
+                Horizontal(
+                    Vertical(
+                        ListView(id="agent-list"),
+                        id="agent-list-col",
+                    ),
+                    Vertical(
+                        Static("", id="agent-detail"),
+                        id="agent-detail-col",
+                    ),
+                    id="agent-split",
+                ),
                 id="agent-box",
+                classes="page-body",
             ),
             id="agent-container",
+            classes="page-shell",
         )
         yield Footer()
 
@@ -127,11 +135,11 @@ class AgentListScreen(Screen):
         stats = catalog_summary(rows)
         updates = sum(1 for r in rows if r.update_available)
         stats_line = (
-            f"已安装 {stats['installed']}/{stats['total']} · "
-            f"可打开 {stats['openable_installed']} 个"
+            f"已安装 [bold green]{stats['installed']}[/]/{stats['total']} · "
+            f"可打开 [bold cyan]{stats['openable_installed']}[/] 个"
         )
         if updates:
-            stats_line += f" · [yellow]{updates} 个可更新[/]"
+            stats_line += f" · [bold yellow]{updates}[/] 个可更新"
         self.query_one("#agent-stats", Static).update(stats_line)
 
         list_view = self.query_one("#agent-list", ListView)
@@ -142,21 +150,90 @@ class AgentListScreen(Screen):
             self._set_status("")
             return
 
-        for row in rows:
-            list_view.append(ListItem(Label(self._list_label(row))))
+        # 按类别分组：已安装可用 → 需配置/可更新 → 未安装
+        ready: list[AgentCatalogRow] = []
+        cfg_needed: list[AgentCatalogRow] = []
+        not_installed: list[AgentCatalogRow] = []
 
-        self._active_index = min(prev, len(rows) - 1)
-        list_view.index = self._active_index
+        for row in rows:
+            if catalog_row_can_open(row):
+                ready.append(row)
+            elif row.installed or row.needs_configure:
+                cfg_needed.append(row)
+            else:
+                not_installed.append(row)
+
+        # _row_map 负责将 ListView 中的序号映射回 _rows
+        self._row_map: list[int] = []
+        self._category_starts: list[int] = []
+
+        def _emit_category(title: str, count: int, rlist: list[AgentCatalogRow]) -> None:
+            if not rlist:
+                return
+            self._category_starts.append(len(self._row_map))
+            bar = "─" * 42
+            list_view.append(
+                ListItem(
+                    Label(f"[bold yellow on #161b22]{bar}[/]\n[bold yellow on #161b22]  {title}（{count}）[/]", classes="agent-category-header"),
+                    disabled=True,
+                )
+            )
+            for row in rlist:
+                self._row_map.append(rows.index(row))
+                list_view.append(ListItem(Label(self._list_label(row))))
+
+        _emit_category("已安装 · 可用", len(ready), ready)
+        _emit_category("已安装 · 需配置或可更新", len(cfg_needed), cfg_needed)
+        _emit_category("未安装", len(not_installed), not_installed)
+
+        if self._row_map:
+            self._active_index = min(prev, len(self._row_map) - 1)
+            list_view.index = self._data_to_listview_index(self._active_index)
         list_view.focus()
         self._update_detail()
         if versions_loaded:
             self.notify("版本信息已更新", severity="information")
             self._set_status("版本信息已更新")
 
+    def _listview_to_data_index(self, lv_index: int | None) -> int | None:
+        """将 ListView 原始序号（含类别标题行）换算为 _row_map 索引。"""
+        if lv_index is None:
+            return None
+        row_map = getattr(self, '_row_map', None)
+        if not row_map:
+            return None
+        # 跳过标题行，找到 lv_index 对应的实际数据位置
+        data_idx = 0
+        for lv_i in range(lv_index + 1):
+            item = self.query_one("#agent-list", ListView).children[lv_i]
+            if hasattr(item, 'disabled') and item.disabled:
+                continue  # 类别标题，不计入数据索引
+            data_idx += 1
+        data_idx -= 1  # 转为 0-based
+        if 0 <= data_idx < len(row_map):
+            return data_idx
+        return None
+
+    def _data_to_listview_index(self, data_index: int) -> int:
+        """将 _row_map 索引换算回 ListView 原始序号。"""
+        row_map = getattr(self, '_row_map', None)
+        if not row_map or data_index < 0 or data_index >= len(row_map):
+            return 0
+        list_view = self.query_one("#agent-list", ListView)
+        data_count = 0
+        for lv_i, child in enumerate(list_view.children):
+            if hasattr(child, 'disabled') and child.disabled:
+                continue
+            if data_count == data_index:
+                return lv_i
+            data_count += 1
+        return 0
+
     def _sync_index_from_list(self) -> None:
         list_view = self.query_one("#agent-list", ListView)
-        if list_view.index is not None and 0 <= list_view.index < len(self._rows):
-            self._active_index = list_view.index
+        data_idx = self._listview_to_data_index(list_view.index)
+        if data_idx is not None:
+            self._active_index = data_idx
 
     def _set_status(self, message: str, *, error: bool = False) -> None:
         prefix = "[red]" if error else "[dim]"
@@ -185,11 +262,29 @@ class AgentListScreen(Screen):
             if row.update_available:
                 line += "  [yellow]↑ 可更新[/]"
             return line
+        if row.installed:
+            # 已安装但版本尚未探测（按 R 可刷新）
+            if row.latest_version:
+                return f"[bold]最新版本:[/] [cyan]{row.latest_version}[/]  [dim]（按 R 刷新当前版本）[/]"
+            return "[bold]版本:[/] [dim]按 R 刷新版本[/]"
         if row.latest_version:
             return f"[bold]最新版本:[/] [cyan]{row.latest_version}[/]（未安装）"
-        if row.installed:
-            return "[bold]版本:[/] [dim]按 R 刷新版本[/]"
         return ""
+
+    def _status_bar(self, row: AgentCatalogRow) -> str:
+        """10 格紧凑状态条，表示安装/版本状态。"""
+        if row.update_available:
+            return "[bold yellow]▌▌▌▌▌▌▌▌▌▌[/]"
+        if catalog_row_can_open(row):
+            return "[bold green]▌▌▌▌▌▌▌▌▌▌[/]"
+        if row.needs_configure:
+            return "[bold yellow]▌▌▌▌▌[/][dim]▌▌▌▌▌[/]"
+        if row.installed:
+            return "[bold green]▌▌▌▌▌▌▌▌▌▌[/]"
+        # 未安装：根据是否可安装显示不同灰度
+        if is_runnable_install_cmd(row.install_cmd):
+            return "[dim]▌▌[/][#21262d]▌▌▌▌▌▌▌▌[/]"
+        return "[#21262d]▌▌▌▌▌▌▌▌▌▌[/]"
 
     def _list_label(self, row: AgentCatalogRow) -> str:
         cached = self._label_cache.get(row.id)
@@ -197,28 +292,30 @@ class AgentListScreen(Screen):
             return cached
         root = get_studio_root()
         if row.update_available:
-            status = "[yellow]↑ 可更新[/]"
+            status = "[bold yellow]↑[/]"
         elif catalog_row_can_open(row):
-            status = "[green]● 可打开[/]"
+            status = "[bold green]●[/]"
         elif row.needs_configure:
-            status = "[yellow]● 需配置[/]"
+            status = "[bold yellow]⚙[/]"
         elif row.installed:
-            status = "[green]● 已安装[/]"
+            status = "[green]●[/]"
         else:
-            status = "[dim]○ 未安装[/]"
+            status = "[dim]○[/]"
         # 启用/禁用标记
         if row.agent_id:
             enabled = agent_enabled(root, row.agent_id)
-            toggle = "[green]⊚ 已启用[/]" if enabled else "[red]⊗ 已禁用[/]"
+            toggle = "[green]◉[/]" if enabled else "[red]◉[/]"
         else:
             toggle = "[dim]—[/]"
-        byok = "[cyan]BYOK[/]" if row.byok else "[yellow]订阅[/]"
+        byok = "[dim cyan]B[/]" if row.byok else "[dim yellow]S[/]"
         ver = ""
         if row.installed_version:
-            ver = f"  [dim]v{row.installed_version}[/]"
-        elif row.latest_version and not row.installed:
-            ver = f"  [dim]最新 v{row.latest_version}[/]"
-        text = f"{status}  [bold]{row.name}[/]{ver}  {byok}  {toggle}\n[dim]{row.tagline}[/]"
+            ver = f" [dim]v{row.installed_version}[/]"
+        bar = self._status_bar(row)
+        text = (
+            f"{status} [bold]{row.name}[/]{ver}  {byok} {toggle}  {bar}\n"
+            f"  [dim italic]{row.tagline}[/]"
+        )
         self._label_cache[row.id] = text
         return text
 
@@ -253,36 +350,52 @@ class AgentListScreen(Screen):
         return text
 
     def _selected_row(self) -> AgentCatalogRow | None:
-        if not self._rows:
+        if not self._rows or not getattr(self, '_row_map', None):
             return None
         idx = self._active_index
-        if idx < 0 or idx >= len(self._rows):
+        if idx < 0 or idx >= len(self._row_map):
             idx = 0
             self._active_index = 0
-        return self._rows[idx]
+        if idx >= len(self._row_map):
+            return None
+        return self._rows[self._row_map[idx]]
 
     def _update_detail(self) -> None:
         row = self._selected_row()
         if not row:
             return
         self.query_one("#agent-detail", Static).update(self._format_detail(row))
+        row_map = getattr(self, '_row_map', [])
+        total = len(row_map) or len(self._rows)
+        # _active_index 现在是 _row_map 索引，直接用于计数
+        display_index = self._active_index if self._active_index < len(row_map) else 0
         self._set_status(
-            f"[{self._active_index + 1}/{len(self._rows)}] {row.name} · "
+            f"[{display_index + 1}/{total}] {row.name} · "
             f"{self._row_action_hint(row)}"
         )
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.id != "agent-list" or not self._rows:
             return
-        if event.list_view.index is not None and event.list_view.index != self._active_index:
-            self._active_index = event.list_view.index
+        lv_idx = event.list_view.index
+        if lv_idx is None:
+            return
+        # 跳过禁用的分类标题行
+        if lv_idx < len(event.list_view.children):
+            item = event.list_view.children[lv_idx]
+            if hasattr(item, 'disabled') and item.disabled:
+                return
+        data_idx = self._listview_to_data_index(lv_idx)
+        if data_idx is not None and data_idx != self._active_index:
+            self._active_index = data_idx
             self._update_detail()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id != "agent-list" or not self._rows:
             return
-        if event.list_view.index is not None:
-            self._active_index = event.list_view.index
+        data_idx = self._listview_to_data_index(event.list_view.index)
+        if data_idx is not None:
+            self._active_index = data_idx
             self._update_detail()
 
     def _click_in_agent_list(self, widget: Widget) -> bool:
@@ -444,9 +557,6 @@ class AgentListScreen(Screen):
             network_versions=True,
         )
 
-    def action_focus_detail(self) -> None:
-        self.query_one("#agent-detail-scroll", VerticalScroll).focus()
-
     def action_toggle_enabled(self) -> None:
         """切换当前选中 Agent 的启用/禁用状态。"""
         if self._busy or self._loading:
@@ -459,19 +569,24 @@ class AgentListScreen(Screen):
         root = get_studio_root()
         current = agent_enabled(root, row.agent_id)
         set_agent_enabled(root, row.agent_id, not current)
-        new_state = agent_enabled(root, row.agent_id)
-        state_text = "已启用" if new_state else "已禁用（调度时自动走 mock）"
+
+        # 清除缓存让下一帧读到新状态
         self._label_cache.clear()
         self._detail_cache.clear()
+
+        # 只刷新当前行，不重建整个列表
+        new_state = agent_enabled(root, row.agent_id)
+        state_text = "已启用" if new_state else "已禁用（调度时自动走 mock）"
+        list_view = self.query_one("#agent-list", ListView)
+        idx = list_view.index
+        if idx is not None and idx < len(list_view.children):
+            item = list_view.children[idx]
+            if not (hasattr(item, 'disabled') and item.disabled):
+                label_widget = item.query_one(Label)
+                label_widget.update(self._list_label(row))
+        self._update_detail()
         self.notify(f"{row.name}: {state_text}", title="Agent 开关", severity="information")
         self._set_status(f"{row.name} {state_text}")
-        # 刷新列表显示
-        list_view = self.query_one("#agent-list", ListView)
-        list_view.remove_children()
-        for r in self._rows:
-            list_view.append(ListItem(Label(self._list_label(r))))
-        list_view.index = self._active_index
-        self._update_detail()
 
     def action_back(self) -> None:
         if getattr(self.app, "project_name", None):

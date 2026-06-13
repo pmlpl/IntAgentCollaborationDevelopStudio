@@ -71,6 +71,10 @@ class Dispatcher:
         self._tree: OrgTree | None = None
         # 防止同一秒内重复 spawn 同一 Worker（Dashboard 可能连续触发两次 try_complete）
         self._worker_spawn_inflight: set[str] = set()
+        # 记录当前编排是否使用 mock 模式（begin_orchestration 设置，后续流程读取）
+        self._auto_mock: bool = False
+        # 记录上次 spawn 尝试时间，防止短时间重复触发
+        self._last_spawn_attempt: float = 0.0
 
     @property
     def project_name(self) -> str:
@@ -161,6 +165,7 @@ class Dispatcher:
             and agent_allowed(root, agent_id)
         )
         auto_mock = mock or not agent_can_run
+        self._auto_mock = auto_mock  # 记录状态供后续 try_complete_orchestration 使用
         if auto_mock and not mock:
             reason = "Agent 未安装或被禁用" if not agent_can_run else "手动 mock"
             logger.info("begin_orchestration: auto-mock (reason=%s, agent=%s)", reason, agent_id)
@@ -251,9 +256,12 @@ class Dispatcher:
         root_task_id: str,
         *,
         spawn_terminals: bool = True,
-        mock: bool = False,
+        mock: bool | None = None,
     ) -> bool:
         """若主管拆解完成，则下发子任务并 spawn Worker Claude 终端（spawn 可重试）。"""
+        # 未显式传入 mock 时，沿用 begin_orchestration 记录的 _auto_mock 状态
+        if mock is None:
+            mock = self._auto_mock
         manager_id = self._root_manager_id()
         subtasks = load_decompose_result(self.project_dir, manager_id)
         if subtasks is None:
@@ -307,6 +315,13 @@ class Dispatcher:
         if mock:
             return
 
+        # 速率限制：距上次尝试 2 秒内不重复执行，避免 Dashboard 高频触发
+        import time
+        now = time.time()
+        if now - self._last_spawn_attempt < 2.0:
+            return
+        self._last_spawn_attempt = now
+
         repo = self._repo_path(root)
         project_root = get_project_root(root, self.project_name)
         ws_root = self.project_dir / "workspaces"
@@ -334,7 +349,7 @@ class Dispatcher:
                     worktree_path = project_root
 
             title = f"Studio · {pos.get('name', assignee)} · {pos.get('title', '')}"
-            # 先占位，避免同一轮询内重复开两个 Claude 窗口
+            # 先占位，避免同一轮询内重复开两个 Agent 窗口
             self._worker_spawn_inflight.add(sub_id)
             self._save_spawned_worker_id(root_task_id, sub_id)
             try:
@@ -347,7 +362,11 @@ class Dispatcher:
                     title=title,
                     task_id=sub_id,
                 )
-            except RuntimeError:
+            except Exception:
+                # 任何异常都撤销占位，允许下次轮询重试
+                logger.warning(
+                    "spawn worker %s failed, will retry", sub_id, exc_info=True
+                )
                 self._remove_spawned_worker_id(root_task_id, sub_id)
             finally:
                 self._worker_spawn_inflight.discard(sub_id)
@@ -457,14 +476,43 @@ class Dispatcher:
         return self.tasks_active / f".review-started-{task_id}.json"
 
     def try_run_manager_reviews(self, root: Path, *, spawn: bool = True) -> None:
-        """对 in_review 任务启动主管后台审查（每任务仅一次）。"""
+        """对 in_review 任务启动主管后台审查（每任务仅一次）。
+
+        防御：交付记录为空或不存在时跳过，避免 Agent 误判需重新执行验证命令。
+        过期标记清理：若审查标记超过 10 分钟未完成，清理并重试（进程可能已崩溃）。
+        """
+        import time as _time
+        from core.dispatch.delivery import load_delivery_record
+
+        REVIEW_STALE_SECONDS = 600  # 10 分钟过期
+
         manager_id = self._root_manager_id()
         for task in self.get_manager_reviews():
             task_id = str(task.get("id") or "")
-            if not task_id or self._review_marker(task_id).exists():
+            if not task_id:
+                continue
+            marker = self._review_marker(task_id)
+            if marker.exists():
+                # 检查标记是否过期（审查进程可能已崩溃）
+                try:
+                    age = _time.time() - marker.stat().st_mtime
+                    if age > REVIEW_STALE_SECONDS:
+                        marker.unlink()
+                        logger.warning("review marker for %s is stale (%.0fs), cleared for retry", task_id, age)
+                    else:
+                        continue
+                except OSError:
+                    continue
+            # 交付记录无实质内容时跳过，避免 Agent 尝试重新运行交付命令
+            record = load_delivery_record(self.project_dir, task_id)
+            if not record:
+                continue
+            has_files = bool(record.get("files") or [])
+            has_summary = bool(str(record.get("summary") or "").strip())
+            if not has_files and not has_summary:
                 continue
             if spawn:
-                self._review_marker(task_id).write_text("{}", encoding="utf-8")
+                marker.write_text("{}", encoding="utf-8")
                 module_args = [
                     "cli.agent_worker",
                     "review",

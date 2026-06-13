@@ -6,6 +6,11 @@ from core.dispatch.dispatcher import Dispatcher
 
 
 def test_begin_and_complete_orchestration(tmp_path: Path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "agents.yaml").write_text("agents: {}\n", encoding="utf-8")
+    (tmp_path / "config" / "platform.yaml").write_text(
+        "agents:\n  policy: all\n", encoding="utf-8"
+    )
     project = tmp_path / "proj"
     project.mkdir()
     positions = {

@@ -44,13 +44,15 @@ class ProjectHubScreen(Screen):
                 Static("[bold]项目中心[/]", classes="title-text"),
                 Static(
                     "↑↓ 选中 · Enter/O 打开 · N 新建 · E 编辑 · Del 删除 · Esc 返回",
-                    classes="muted",
+                    classes="page-hint",
                 ),
                 ListView(id="project-list"),
                 Static("", id="hub-status", classes="muted"),
                 id="hub-box",
+                classes="page-body",
             ),
             id="hub-container",
+            classes="page-shell",
         )
         yield Footer()
 

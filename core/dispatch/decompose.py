@@ -81,7 +81,7 @@ def _parse_with_retry(
     from agents.runner import run_position_task_capture
 
     last_error = ""
-    root = project_dir.parent  # approximate
+    root = _find_studio_root(project_dir)
 
     for attempt in range(max_retries + 1):
         if attempt == 0:
@@ -124,29 +124,51 @@ def _parse_with_retry(
 
 def _resolve_decompose_fallback(project_dir: Path) -> str:
     """读取 platform.yaml 的 orchestration.decompose_fallback 策略。"""
-    import yaml as _yaml
     import os as _os
 
     if _os.environ.get("STUDIO_MOCK_FALLBACK", "").lower() in ("1", "true", "yes"):
         return "mock"
 
-    root = project_dir.parent
-    cfg_path = root / "config" / "platform.yaml"
-    if cfg_path.exists():
-        data = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        orch = data.get("orchestration") or {}
-        return str(orch.get("decompose_fallback", "mock"))
+    # 从 .studio/ 往上找项目根，再定位 config/platform.yaml
+    studio_root = _find_studio_root(project_dir)
+    cfg_path = studio_root / "config" / "platform.yaml"
+    if not cfg_path.exists():
+        return "mock"
+
+    try:
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return "mock"
+
+    orch = data.get("orchestration") or {}
+    fallback = str(orch.get("decompose_fallback", "mock")).strip().lower()
+    if fallback in ("mock", "raise", "error"):
+        return fallback
     return "mock"
-    """去掉 ```json ... ``` 包裹。"""
-    text = text.strip()
-    if not text.startswith("```"):
-        return text
-    lines = text.splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+
+
+def _find_studio_root(path: Path) -> Path:
+    """从 .studio/ 目录往上找到 studio 项目根。
+
+    到达项目目录（包含 .studio/ 的目录）后取其父目录（即 projects/ 的父目录）。
+    """
+    # 找到包含 .studio/ 的项目数据目录
+    for p in [path] + list(path.parents):
+        if (p / ".studio").is_dir():
+            # p 是项目数据目录（如 projects/xxx/.studio），根是 p.parent.parent
+            # 即 projects/ 的父目录 → 到达含 config/ 和 projects/ 的仓库根
+            candidate = p.parent.parent
+            if (candidate / "config" / "platform.yaml").exists():
+                return candidate
+            # 降级：尝试 p.parent
+            if (p.parent / "config" / "platform.yaml").exists():
+                return p.parent
+            break
+    # 最终降级：用 path 往上找任意包含 config/platform.yaml 的目录
+    for p in [path] + list(path.parents):
+        if (p / "config" / "platform.yaml").exists():
+            return p
+    return path
 
 
 def _coerce_subtask_list(items: list[Any]) -> list[dict[str, Any]] | None:
@@ -253,7 +275,8 @@ def validate_subtasks(
     """校验 assignee 在主管子树内且字段完整。"""
     from core.org.tree_ops import OrgTree
 
-    data = yaml.safe_load((project_dir / "positions.yaml").read_text(encoding="utf-8"))
+    from core.org.persist import load_positions_data
+    data = load_positions_data(project_dir)
     tree = OrgTree.from_yaml_data(data)
     allowed = set(tree.subtree(manager_id)) - {manager_id}
     if not subtasks:
@@ -296,7 +319,8 @@ def save_decompose_result(
 
 def generate_mock_subtasks(project_dir: Path, description: str) -> list[dict[str, Any]]:
     """无真实 Agent 时，根据 positions.yaml 生成默认子任务。"""
-    data = yaml.safe_load((project_dir / "positions.yaml").read_text(encoding="utf-8"))
+    from core.org.persist import load_positions_data
+    data = load_positions_data(project_dir)
     positions = data.get("positions", [])
     manager_ids = {p["id"] for p in positions if p.get("is_manager")}
     workers = [p for p in positions if p.get("id") not in manager_ids and p.get("parent")]
