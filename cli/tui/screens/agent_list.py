@@ -297,21 +297,6 @@ class AgentListScreen(Screen):
             return f"[bold]最新版本:[/] [cyan]{row.latest_version}[/]（未安装）"
         return ""
 
-    def _status_bar(self, row: AgentCatalogRow) -> str:
-        """10 格紧凑状态条，表示安装/版本状态。"""
-        if row.update_available:
-            return "[bold yellow]▌▌▌▌▌▌▌▌▌▌[/]"
-        if catalog_row_can_open(row):
-            return "[bold green]▌▌▌▌▌▌▌▌▌▌[/]"
-        if row.needs_configure:
-            return "[bold yellow]▌▌▌▌▌[/][dim]▌▌▌▌▌[/]"
-        if row.installed:
-            return "[bold green]▌▌▌▌▌▌▌▌▌▌[/]"
-        # 未安装：根据是否可安装显示不同灰度
-        if is_runnable_install_cmd(row.install_cmd):
-            return "[dim]▌▌[/][#21262d]▌▌▌▌▌▌▌▌[/]"
-        return "[#21262d]▌▌▌▌▌▌▌▌▌▌[/]"
-
     def _list_label(self, row: AgentCatalogRow) -> str:
         cached = self._label_cache.get(row.id)
         if cached:
@@ -337,9 +322,8 @@ class AgentListScreen(Screen):
         ver = ""
         if row.installed_version:
             ver = f" [dim]v{row.installed_version}[/]"
-        bar = self._status_bar(row)
         text = (
-            f"{status} [bold]{row.name}[/]{ver}  {byok} {toggle}  {bar}\n"
+            f"{status} [bold]{row.name}[/]{ver}  {byok} {toggle}\n"
             f"  [dim italic]{row.tagline}[/]"
         )
         self._label_cache[row.id] = text
