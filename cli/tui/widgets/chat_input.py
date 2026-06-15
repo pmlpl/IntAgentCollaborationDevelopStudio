@@ -205,9 +205,10 @@ class ChatInputArea(Vertical):
         )
 
     def on_mount(self) -> None:
-        """初始状态下拉隐藏。"""
+        """初始状态下拉隐藏，聚焦输入框。"""
         dropdown = self.query_one("#chat-completion", CompletionDropdown)
         dropdown.display = False
+        self.query_one("#chat-input", Input).focus()
 
     # ── 输入事件 ──
 
@@ -309,8 +310,8 @@ class ChatInputArea(Vertical):
 
         dropdown.display = False
         self._dropdown_visible = False
-        # 重新聚焦输入框
-        self.query_one("#chat-input", Input).focus()
+        # 延迟聚焦，确保下拉关闭后焦点回到输入框
+        self.set_timer(0.05, lambda: self.query_one("#chat-input", Input).focus())
 
     # ── 历史浏览 ──
 
