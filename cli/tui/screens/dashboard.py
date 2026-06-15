@@ -111,10 +111,13 @@ class DashboardScreen(Screen):
     # ── 项目同步 ──
 
     def _sync_project_name(self) -> bool:
-        # 只有当前活跃的 dashboard 才同步，防止旧实例覆盖新项目的状态
-        if self.app.screen is not self:
-            return bool(self.project_name)
         root = get_studio_root()
+        if self.app.screen is not self:
+            # 非活跃屏幕：只从 app 同步自身，不写回（防止旧 dashboard 覆盖新项目）
+            app_name = getattr(self.app, "project_name", None)
+            if app_name and app_name != self.project_name:
+                self.project_name = app_name
+            return bool(self.project_name)
         candidate = self.project_name or getattr(self.app, "project_name", None)
         if candidate and not project_exists(root, candidate):
             clear_stale_current_project(root, candidate)
