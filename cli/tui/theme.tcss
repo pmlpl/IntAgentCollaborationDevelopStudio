@@ -38,6 +38,7 @@ Footer {
 .page-body {
     height: 1fr;
     min-height: 0;
+    overflow-y: auto;
 }
 
 .page-scroll {
@@ -95,6 +96,7 @@ Footer {
 #expand-container .page-body {
     height: 1fr;
     min-height: 0;
+    overflow-y: auto;
 }
 
 #dispatch-goal-input,
@@ -212,18 +214,48 @@ Footer {
     background: #0f1729;
 }
 
-/* 编排进度区：底部滑入 */
-#orch-container {
+/* 底部栏：编排进度 + 通信中枢 */
+#bottom-bar {
     height: auto;
     max-height: 12;
-    margin: 1 1 0 1;
-    border: solid #d29922;
-    padding: 1 2;
+    margin: 0 1;
+    border: solid #30363d;
+    padding: 0 1;
     background: #0f1729;
+    overflow-y: auto;
+}
+
+#orch-panel-text {
+    height: auto;
+    max-height: 8;
 }
 
 #orch-progress {
-    margin: 0 0 1 0;
+    margin: 0 0 0 0;
+}
+
+#agent-activity {
+    height: auto;
+    margin: 0;
+    padding: 0;
+    color: #8b949e;
+}
+
+#message-log {
+    height: auto;
+    max-height: 5;
+    min-height: 1;
+    margin: 0;
+    overflow-y: auto;
+    background: #0d1117;
+    border: solid #30363d;
+    padding: 0 1;
+}
+
+#ceo-chat-input {
+    width: 1fr;
+    margin: 0;
+    max-height: 3;
 }
 
 /* ── Agent 目录 ── */
@@ -231,21 +263,13 @@ Footer {
     height: 1fr;
 }
 
-/* 侧边列表 + 详情并排 */
-#agent-split {
-    height: 1fr;
-    min-height: 0;
-}
-
-#agent-list-col {
-    width: 36;
-    height: 1fr;
-    margin-right: 1;
-}
-
+/* 上下布局：上方选择列表（全宽限高），下方详情面板 */
 #agent-list {
-    height: 1fr;
-    min-height: 8;
+    width: 100%;
+    height: auto;
+    max-height: 10;
+    min-height: 4;
+    margin-bottom: 1;
     border: solid #30363d;
     background: #0f1729;
 }
@@ -264,13 +288,7 @@ Footer {
     border-bottom: solid #30363d;
 }
 
-/* 详情面板 */
-#agent-detail-col {
-    width: 1fr;
-    height: 1fr;
-    min-height: 0;
-}
-
+/* 详情面板：全宽，占剩余高度 */
 #agent-detail {
     width: 100%;
     height: 1fr;
@@ -424,4 +442,46 @@ LoadingIndicator {
 Notification {
     background: #161b22;
     border: solid #30363d;
+}
+
+/* ── ChatScreen ── */
+
+#ChatScreen {
+    layout: vertical;
+}
+
+#chat-header {
+    height: 3;
+    background: #161b22;
+    border: solid #30363d;
+    padding: 0 1;
+    content-align: left middle;
+    color: #8b949e;
+}
+
+#chat-messages {
+    height: 1fr;
+    border: solid #30363d;
+    background: #0d1117;
+    scrollbar-color: #30363d;
+    scrollbar-color-hover: #484f58;
+    padding: 0 1;
+}
+
+#chat-status {
+    height: 1;
+    background: #161b22;
+    color: #8b949e;
+    padding: 0 1;
+}
+
+#chat-input {
+    width: 1fr;
+    max-height: 3;
+    border: solid #30363d;
+    background: #161b22;
+}
+
+#chat-input:focus {
+    border: solid #58a6ff;
 }
