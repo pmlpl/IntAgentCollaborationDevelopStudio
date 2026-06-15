@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from agents.chat_agent import AgentConfig, chat_agent_respond
 from agents.runner import agent_available, run_agent_prompt_capture
 from core.project import ORG_TEMPLATES, get_studio_root, list_all_role_ids
 from core.research.local_llm import local_llm_available, run_local_prompt_capture
@@ -421,6 +422,67 @@ def format_report_for_ui(report: ResearchReport) -> str:
     return "\n".join(lines)
 
 
+def _try_chat_model_research(
+    desc: str,
+    web_hits: list[SearchHit],
+    template_root: Path,
+    platform_root: Path,
+    *,
+    tech_stack: str = "",
+    profile: ProjectProfile | None = None,
+    web_gather: WebGatherResult | None = None,
+) -> ResearchReport | None:
+    """用聊天配置的模型执行调研（优先于外部 CLI agent）。"""
+    chat_settings_path = platform_root / "config" / "chat_settings.yaml"
+    if not chat_settings_path.is_file():
+        return None
+
+    try:
+        settings_data = yaml.safe_load(chat_settings_path.read_text(encoding="utf-8")) or {}
+        chat_model = settings_data.get("chat_model", {})
+        model = str(chat_model.get("model", "")).strip()
+        api_key = str(chat_model.get("api_key", "")).strip()
+        base_url = str(chat_model.get("base_url", "")).strip()
+    except Exception:
+        return None
+
+    if not model or not api_key:
+        return None
+
+    prompt = build_research_prompt(
+        desc, web_hits, template_root,
+        tech_stack=tech_stack, profile=profile, web_gather=web_gather,
+    )
+
+    config = AgentConfig(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        system_prompt="",
+        max_tokens=4096,
+        temperature=0.3,
+    )
+
+    try:
+        output = chat_agent_respond(config, prompt)
+    except Exception:
+        return None
+
+    if not output.strip():
+        return None
+
+    try:
+        data = parse_research_output(output)
+        report = _normalize_report(
+            desc, data, web_hits=web_hits, source="agent", agent_ok=True
+        )
+        if web_gather:
+            report.web_gather = web_gather
+        return report
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
 def run_agent_research(
     description: str,
     root: Path | None = None,
@@ -479,7 +541,15 @@ def run_agent_research(
         # 本地模型不可用时回退离线，不自动调用 Claude 以免浪费 token
 
     elif mode == "agent":
-        if agent_available(platform_root, agent_key):
+        # 优先使用聊天配置的模型（更可靠，不依赖外部 CLI）
+        if not force_offline:
+            report = _try_chat_model_research(
+                desc, web_hits, template_root, platform_root,
+                tech_stack=tech_stack, profile=profile, web_gather=web_gather,
+            )
+
+        # 回退到 opencode CLI agent
+        if report is None and agent_available(platform_root, agent_key):
             prompt = build_research_prompt(
                 desc,
                 web_hits,
