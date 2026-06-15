@@ -9,7 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
 from cli.tui.widgets.chat_input import (
-    ChatInput,
+    ChatInputArea,
     SlashCommand,
     render_chat_message,
     parse_slash_command,
@@ -51,10 +51,9 @@ class ChatScreen(Screen):
         yield Static(self._build_header_text(), id="chat-header")
         yield RichLog(id="chat-messages", wrap=True, highlight=True)
         yield Static("", id="chat-status")
-        yield ChatInput(
+        yield ChatInputArea(
             agent_ids=self._agent_ids(),
-            placeholder="输入指令… Tab:补全 /:命令",
-            id="chat-input",
+            id="chat-input-area",
         )
         yield Footer()
 
@@ -172,8 +171,8 @@ class ChatScreen(Screen):
         if not text:
             return
 
-        input_widget = self.query_one("#chat-input", ChatInput)
-        input_widget.push_history(text)
+        input_area = self.query_one("#chat-input-area", ChatInputArea)
+        input_area.push_history(text)
 
         cmd = parse_slash_command(text)
         if cmd:
@@ -181,7 +180,7 @@ class ChatScreen(Screen):
         else:
             self._send_to_manager(text)
 
-        input_widget.value = ""
+        input_area.clear_input()
 
     def _send_to_manager(self, text: str) -> None:
         """发送自然语言消息给 Manager。"""

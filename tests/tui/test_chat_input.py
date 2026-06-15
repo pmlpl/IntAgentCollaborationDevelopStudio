@@ -1,13 +1,15 @@
-"""Tests for ChatInput widget: slash parsing, completion, history."""
+"""Tests for ChatInput widget: slash parsing, completion, filter_commands."""
 from __future__ import annotations
 
 import pytest
 
 from cli.tui.widgets.chat_input import (
-    ChatInput,
+    ChatInputArea,
+    CompletionDropdown,
     SlashCommand,
     parse_slash_command,
     get_completions,
+    filter_commands,
 )
 
 
@@ -59,3 +61,35 @@ class TestGetCompletions:
     def test_unknown_slash_no_completions(self):
         results = get_completions("/zzz")
         assert results == []
+
+
+class TestFilterCommands:
+    def test_empty_prefix_returns_all(self):
+        results = filter_commands("")
+        assert len(results) == 8
+        names = [r[0] for r in results]
+        assert "task" in names
+        assert "help" in names
+
+    def test_ta_matches_task(self):
+        results = filter_commands("ta")
+        assert len(results) == 1
+        assert results[0][0] == "task"
+
+    def test_s_matches_status(self):
+        results = filter_commands("s")
+        names = [r[0] for r in results]
+        assert "status" in names
+
+    def test_st_matches_status(self):
+        results = filter_commands("st")
+        assert len(results) == 1
+        assert results[0][0] == "status"
+
+    def test_zzz_matches_nothing(self):
+        results = filter_commands("zzz")
+        assert results == []
+
+    def test_returns_name_and_description(self):
+        results = filter_commands("help")
+        assert results[0] == ("help", "显示所有命令帮助")

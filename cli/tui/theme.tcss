@@ -475,6 +475,32 @@ Notification {
     padding: 0 1;
 }
 
+#chat-input-area {
+    height: auto;
+    max-height: 12;
+}
+
+#chat-completion {
+    height: auto;
+    max-height: 8;
+    background: #161b22;
+    border: solid #30363d;
+    display: none;
+    overflow-y: auto;
+}
+
+#chat-completion > .option-list--option {
+    height: auto;
+    padding: 0 1;
+    background: #161b22;
+    color: #c9d1d9;
+}
+
+#chat-completion > .option-list--option-highlighted {
+    background: #1f6feb;
+    color: #ffffff;
+}
+
 #chat-input {
     width: 1fr;
     max-height: 3;
