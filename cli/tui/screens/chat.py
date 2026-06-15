@@ -129,7 +129,7 @@ class ChatScreen(Screen):
             agent_ids=self._agent_ids(),
             id="chat-input-area",
         )
-        yield ModelConfigBar(project_root=self._project_dir, id="model-config-bar")
+        yield ModelConfigBar(id="model-config-bar")
         yield Footer()
 
     def _build_header_text(self) -> str:

@@ -12,6 +12,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, Label, Static
 
 from agents.chat_agent import AgentConfig, check_connection
+from core.project import get_studio_root
 
 # 配置文件名
 _SETTINGS_FILE = "chat_settings.yaml"
@@ -91,14 +92,18 @@ class ModelConfigBar(Vertical):
     }
     """
 
-    def __init__(self, project_root: Path | None = None, **kwargs: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._project_root = project_root
         self._expanded: bool = False
         self._model: str = "claude"
         self._api_key: str = ""
         self._base_url: str = ""
         self._connection_status: str = ""  # "ok" / "fail" / "" (未测试)
+
+    @staticmethod
+    def _root() -> Path:
+        """获取 studio 根目录（始终可用，不依赖外部传入）。"""
+        return get_studio_root()
 
     def compose(self) -> ComposeResult:
         # 折叠态摘要
@@ -143,11 +148,10 @@ class ModelConfigBar(Vertical):
 
     def on_mount(self) -> None:
         """加载保存的配置。"""
-        if self._project_root:
-            settings = load_chat_settings(self._project_root)
-            self._model = settings["model"]
-            self._api_key = settings["api_key"]
-            self._base_url = settings["base_url"]
+        settings = load_chat_settings(self._root())
+        self._model = settings["model"]
+        self._api_key = settings["api_key"]
+        self._base_url = settings["base_url"]
         # 更新输入框初始值
         self._sync_inputs()
         self._update_summary()
@@ -202,13 +206,12 @@ class ModelConfigBar(Vertical):
         self._api_key = self.query_one("#config-key", Input).value
         self._base_url = self.query_one("#config-url", Input).value.strip()
 
-        if self._project_root:
-            save_chat_settings(
-                self._project_root,
-                model=self._model,
-                api_key=self._api_key,
-                base_url=self._base_url,
-            )
+        save_chat_settings(
+            self._root(),
+            model=self._model,
+            api_key=self._api_key,
+            base_url=self._base_url,
+        )
 
         self._update_summary()
         self.toggle()
