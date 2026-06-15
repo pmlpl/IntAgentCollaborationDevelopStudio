@@ -75,6 +75,10 @@ def check_connection(config: AgentConfig) -> tuple[bool, str]:
     if not api_key:
         return False, f"未设置 API Key（需要 {_env_hint(config.model)}）"
 
+    # 调试：拼接实际 endpoint
+    base_url = config.base_url or ""
+    endpoint = f"{base_url}/chat/completions" if base_url else "(SDK 默认)"
+
     # Claude 模型：用 Anthropic SDK
     if model_id.startswith("claude"):
         try:
@@ -82,17 +86,17 @@ def check_connection(config: AgentConfig) -> tuple[bool, str]:
             client_kwargs: dict[str, Any] = {"api_key": api_key}
             if config.base_url:
                 client_kwargs["base_url"] = config.base_url
+                endpoint = f"{config.base_url}/messages"
             client = anthropic.Anthropic(**client_kwargs)
             response = client.messages.create(
                 model=model_id,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "hi"}],
             )
-            # 返回实际使用的模型 ID
             actual_model = getattr(response, "model", model_id)
-            return True, f"已连接 {actual_model}"
+            return True, f"已连接 {actual_model} @ {endpoint}"
         except Exception as exc:
-            return False, str(exc)[:120]
+            return False, f"[model={model_id} url={endpoint}] {exc}"[:180]
 
     # 其他模型：用 OpenAI 兼容接口
     try:
@@ -100,14 +104,14 @@ def check_connection(config: AgentConfig) -> tuple[bool, str]:
     except ImportError:
         return False, "需要安装 openai 包: pip install openai"
 
-    base_url = config.base_url or None
     if not base_url:
         if model_id.startswith("deepseek"):
             base_url = "https://api.deepseek.com/v1"
         elif model_id.startswith("gemini"):
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+    endpoint = f"{base_url}/chat/completions" if base_url else "(SDK 默认)"
 
-    client_kwargs = {"api_key": api_key}
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
     if base_url:
         client_kwargs["base_url"] = base_url
 
@@ -119,9 +123,9 @@ def check_connection(config: AgentConfig) -> tuple[bool, str]:
             messages=[{"role": "user", "content": "hi"}],
         )
         actual_model = getattr(response, "model", model_id)
-        return True, f"已连接 {actual_model}"
+        return True, f"已连接 {actual_model} @ {endpoint}"
     except Exception as exc:
-        return False, str(exc)[:120]
+        return False, f"[model={model_id} url={endpoint}] {exc}"[:180]
 
 
 def chat_agent_respond(
