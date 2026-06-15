@@ -381,22 +381,57 @@ class ChatScreen(Screen):
     # ── 自动编排 ──
 
     def _start_orchestration(self, description: str) -> None:
-        """触发自动编排流程。"""
+        """触发自动编排流程。Agent 不可用时中断并提示用户。"""
         if not self._project_dir:
             return
         try:
             from core.project import get_studio_root
+            from core.config.agent_policy import agent_allowed, agent_enabled
+            from agents.runner import agent_available
+
             root = get_studio_root()
             project_name = getattr(self.app, "project_name", None)
             if not project_name:
                 return
             disp = get_dispatcher(root, project_name)
+            log = self.query_one("#chat-messages", RichLog)
+
+            # 检查主管 Agent 是否可用（不走 mock）
+            manager_id = disp._root_manager_id()
+            pos = disp._position_by_id(manager_id)
+            agent_id = pos.get("agent", "")
+
+            if not agent_id or not agent_available(root, agent_id):
+                _w(log, f"[red]│[/] [red]⚠ 无法启动编排[/]\n"
+                        f"[red]│[/]   主管 Agent [bold]{agent_id or '(未配置)'}[/] 未安装或不在 PATH 中。\n"
+                        f"[red]│[/]\n"
+                        f"[yellow]│[/] [yellow]解决方案（任选其一）：[/]\n"
+                        f"[yellow]│[/]   1. 安装 Agent CLI：[bold]npm install -g {agent_id}[/]\n"
+                        f"[yellow]│[/]   2. 在 [bold]config/agents.yaml[/] 中将主管的 agent 改为已安装的 CLI\n"
+                        f"[yellow]│[/]   3. 运行 [bold]studio agent check[/] 查看所有 Agent 状态",
+                   scroll_end=self._auto_scroll)
+                return
+
+            if not agent_enabled(root, agent_id):
+                _w(log, f"[red]│[/] [red]⚠ 无法启动编排[/]\n"
+                        f"[red]│[/]   主管 Agent [bold]{agent_id}[/] 已被禁用。\n"
+                        f"[yellow]│[/]   运行 [bold]studio agent check[/] 后在配置中启用。",
+                   scroll_end=self._auto_scroll)
+                return
+
+            if not agent_allowed(root, agent_id):
+                _w(log, f"[red]│[/] [red]⚠ 无法启动编排[/]\n"
+                        f"[red]│[/]   主管 Agent [bold]{agent_id}[/] 被策略限制（byok_only）。\n"
+                        f"[yellow]│[/]   在 [bold]config/platform.yaml[/] 的 agents.policy 改为 [bold]all[/]，\n"
+                        f"[yellow]│[/]   或使用支持 BYOK 的 Agent（如 opencode / hermes / aider）。",
+                   scroll_end=self._auto_scroll)
+                return
+
             task = disp.begin_orchestration(root, description, spawn_terminals=True)
             self._orch_task_id = task["id"]
             self._orch_root = root
             self._orch_disp = disp
 
-            log = self.query_one("#chat-messages", RichLog)
             _w(log, f"[#f9ca24]│[/] [#f9ca24]🔔 编排启动[/]\n"
                     f"[#f9ca24]│[/]    任务 {task['id']} 已创建，主管正在拆解…",
                scroll_end=self._auto_scroll)
