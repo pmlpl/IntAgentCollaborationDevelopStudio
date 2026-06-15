@@ -516,7 +516,7 @@ Notification {
 
 #model-config-bar {
     height: auto;
-    max-height: 12;
+    max-height: 14;
     background: #161b22;
     border-top: solid #30363d;
     padding: 0 1;

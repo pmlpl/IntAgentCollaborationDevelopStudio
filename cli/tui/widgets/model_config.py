@@ -86,7 +86,7 @@ class ModelConfigBar(Vertical):
     DEFAULT_CSS = """
     ModelConfigBar {
         height: auto;
-        max-height: 12;
+        max-height: 14;
         background: #161b22;
         border-top: solid #30363d;
     }
@@ -141,10 +141,10 @@ class ModelConfigBar(Vertical):
                 Button("折叠", variant="default", id="config-collapse"),
                 classes="config-actions",
             ),
+            # 连接测试状态行（初始隐藏）
+            Static("", id="config-test-status"),
             id="config-expanded",
         )
-        # 连接测试状态行（初始隐藏）
-        yield Static("", id="config-test-status")
 
     def on_mount(self) -> None:
         """加载保存的配置。"""
