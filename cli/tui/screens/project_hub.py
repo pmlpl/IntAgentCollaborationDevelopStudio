@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.containers import Container, Vertical
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
@@ -40,7 +40,7 @@ class ProjectHubScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Container(
-            Vertical(
+            VerticalScroll(
                 Static("[bold]项目中心[/]", classes="title-text"),
                 Static(
                     "↑↓ 选中 · Enter/O 打开 · N 新建 · E 编辑 · Del 删除 · Esc 返回",
@@ -168,7 +168,7 @@ class ProjectHubScreen(Screen):
             self._open_project(entry)
 
     def action_new_project(self) -> None:
-        self.app.push_screen(OnboardingScreen())
+        self.app.switch_screen(OnboardingScreen())
 
     def action_edit_selected(self) -> None:
         self._sync_index_from_list()
@@ -198,10 +198,7 @@ class ProjectHubScreen(Screen):
             root = get_studio_root()
             project_id = target["id"]
             try:
-                delete_project(root, project_id, remove_folder=True)
-            except OSError as exc:
-                self._set_status(f"删除失败: {exc}", error=True)
-                return
+                folder_deleted, warning = delete_project(root, project_id, remove_folder=True)
             except ValueError as exc:
                 self._set_status(str(exc), error=True)
                 return
@@ -216,7 +213,11 @@ class ProjectHubScreen(Screen):
                         dashboard._show_no_project()
             except Exception:
                 pass
-            self._set_status(f"已删除: {target.get('name') or project_id}")
+            if warning:
+                self._set_status(warning, error=True)
+                self.notify(warning, title="部分完成", severity="warning")
+            else:
+                self._set_status(f"已删除: {target.get('name') or project_id}")
             self._request_reload()
 
         self.app.push_screen(ProjectDeleteModal(target), on_done)
@@ -224,7 +225,7 @@ class ProjectHubScreen(Screen):
     def action_back(self) -> None:
         if getattr(self.app, "project_name", None):
             self.app.switch_screen("dashboard")
-        elif self._projects:
+        else:
             self.app.switch_screen("welcome")
 
     def action_quit(self) -> None:
