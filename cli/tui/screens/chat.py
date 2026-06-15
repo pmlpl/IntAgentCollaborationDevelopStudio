@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import re
-import threading
 from pathlib import Path
 
 from rich.markup import render as rich_render
 from textual.app import ComposeResult
-from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 from textual import work
@@ -28,7 +26,6 @@ from core.ipc.message_log import MessageLogCollector
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-# 可用模型列表
 AVAILABLE_MODELS = {
     "claude": "Claude (Anthropic)",
     "gpt": "GPT (OpenAI)",
@@ -36,7 +33,6 @@ AVAILABLE_MODELS = {
     "gemini": "Gemini (Google)",
 }
 
-# 思考动画帧
 _THINKING_FRAMES = [
     "[#4ecdc4]◐[/] 主管正在思考",
     "[#4ecdc4]◓[/] 主管正在思考.",
@@ -100,8 +96,10 @@ class ChatScreen(Screen):
         self._is_thinking: bool = False
         self._think_frame: int = 0
         self._think_timer = None
-        self._model: str = "claude"  # 默认模型
-        self._recent_history: list[str] = []  # 最近对话（供 Agent 参考）
+        self._model: str = "claude"
+        self._recent_history: list[str] = []
+        # 本地已渲染的消息 ID（防止轮询重复渲染）
+        self._rendered_ids: set[str] = set()
 
     # ── 布局 ──
 
@@ -167,6 +165,9 @@ class ChatScreen(Screen):
         records = self._collector.collect_new(limit_per_agent=15)
         if not records:
             return
+        # 标记历史消息为已渲染（防止轮询重复）
+        for rec in records:
+            self._rendered_ids.add(rec.message.id)
         recent = records[-30:]
         log = self.query_one("#chat-messages", RichLog)
         _w(log, "[dim]── 会话开始 ──[/]", scroll_end=False)
@@ -179,12 +180,21 @@ class ChatScreen(Screen):
         if not self._collector:
             return
         new_records = self._collector.collect_new()
-        if new_records:
-            if self._is_thinking:
-                self._stop_thinking()
+        has_new = False
+        for rec in new_records:
+            # 跳过本地已渲染的消息
+            if rec.message.id in self._rendered_ids:
+                continue
+            self._rendered_ids.add(rec.message.id)
+            # 清理 ANSI（外部 Agent 可能带脏输出）
+            msg = rec.message
+            if msg.payload and isinstance(msg.payload.get("text"), str):
+                msg.payload["text"] = _strip_ansi(msg.payload["text"])
+            has_new = True
             log = self.query_one("#chat-messages", RichLog)
-            for rec in new_records:
-                _w(log, render_chat_message(rec), scroll_end=self._auto_scroll)
+            _w(log, render_chat_message(rec), scroll_end=self._auto_scroll)
+        if has_new and self._is_thinking:
+            self._stop_thinking()
         self._check_task_state()
 
     def _check_task_state(self) -> None:
@@ -256,15 +266,17 @@ class ChatScreen(Screen):
             self.notify("未连接到项目或 Manager", severity="warning")
             return
 
-        # 1. 投递到 inbox
-        send_ceo_feedback(
+        # 投递到 Manager inbox（系统记录用，不在聊天中渲染）
+        msg = send_ceo_feedback(
             project_dir=self._project_dir,
             manager_id=self._manager_id,
             text=text,
             task_id=self._task_id,
         )
+        # 标记为已渲染（防止轮询捡到后重复显示）
+        self._rendered_ids.add(msg.id)
 
-        # 2. 立即显示 CEO 消息
+        # 本地立即显示 CEO 消息
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         log = self.query_one("#chat-messages", RichLog)
@@ -272,7 +284,7 @@ class ChatScreen(Screen):
            scroll_end=self._auto_scroll)
         self._recent_history.append(f"CEO: {text}")
 
-        # 3. 启动思考 + 异步调用 Agent
+        # 思考 + 异步调用 Agent
         self._start_thinking()
         self._ask_manager_agent(text)
 
@@ -282,8 +294,6 @@ class ChatScreen(Screen):
         try:
             from core.project import get_studio_root
             root = get_studio_root()
-
-            # 获取 Manager 的 agent key
             from agents.runner import load_position, run_agent_prompt_capture
             pos = load_position(self._project_dir, self._manager_id)
             agent_key = pos.get("agent", "claude")
@@ -298,16 +308,10 @@ class ChatScreen(Screen):
                 timeout_sec=120,
             )
 
-            # 清理输出
             output = _strip_ansi(output)
-
-            self.app.call_from_thread(
-                self._on_manager_reply, rc, output
-            )
+            self.app.call_from_thread(self._on_manager_reply, rc, output)
         except Exception as exc:
-            self.app.call_from_thread(
-                self._on_manager_error, _strip_ansi(str(exc))
-            )
+            self.app.call_from_thread(self._on_manager_error, _strip_ansi(str(exc)))
 
     def _on_manager_reply(self, rc: int, output: str) -> None:
         self._stop_thinking()
@@ -321,19 +325,6 @@ class ChatScreen(Screen):
                 reply = reply[:1997] + "..."
             self._recent_history.append(f"Manager: {reply}")
 
-            # 投递到 inbox
-            from core.ipc.message_bus import Message, MessageBus
-            ceo_inbox = self._project_dir / "agents" / "__ceo__" / "inbox"
-            if ceo_inbox.parent.exists():
-                bus = MessageBus(ceo_inbox)
-                bus.deliver(Message(
-                    id=Message.new_id(), type="reply",
-                    sender=self._manager_id, recipient="__ceo__",
-                    task_id=self._task_id,
-                    payload={"text": reply}, trace=["manager", "chat"],
-                ))
-
-            # 渲染 Manager 回复
             _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 {self._manager_id}[/] [dim]{now}[/] [#4ecdc4]({AVAILABLE_MODELS.get(self._model, self._model)})[/]")
             for line in reply.split("\n"):
                 _w(log, f"[#4ecdc4]│[/]   {line}")
@@ -362,7 +353,6 @@ class ChatScreen(Screen):
 
     def _cmd_status(self, args: str) -> None:
         self._show_system_message("正在获取状态…")
-        self.notify("状态已刷新", severity="information")
 
     def _cmd_escalations(self, args: str) -> None:
         self._show_system_message("查看待决策升级…")
@@ -370,6 +360,7 @@ class ChatScreen(Screen):
     def _cmd_clear(self, args: str) -> None:
         log = self.query_one("#chat-messages", RichLog)
         log.clear()
+        self._rendered_ids.clear()
         _w(log, "[dim]── 屏幕已清空 ──[/]")
 
     def _cmd_help(self, args: str) -> None:
@@ -388,6 +379,8 @@ class ChatScreen(Screen):
             return
         self._collector.reset()
         records = self._collector.collect_new(limit_per_agent=n)
+        for rec in records:
+            self._rendered_ids.add(rec.message.id)
         recent = records[-n:]
         log = self.query_one("#chat-messages", RichLog)
         for rec in recent:
@@ -407,7 +400,6 @@ class ChatScreen(Screen):
         self.notify(f"查看审批: {args}", severity="information")
 
     def _cmd_model(self, args: str) -> None:
-        """切换模型。用法: /model claude 或 /model list"""
         if args == "list" or not args:
             log = self.query_one("#chat-messages", RichLog)
             _w(log, "[#f9ca24]│[/] [#f9ca24]🔔 可用模型[/]")
@@ -423,7 +415,6 @@ class ChatScreen(Screen):
         self._model = model_key
         model_name = AVAILABLE_MODELS[model_key]
         self._show_system_message(f"已切换模型: {model_name}")
-        # 更新 Header
         self.query_one("#chat-header", Static).update(self._build_header_text())
         self.notify(f"模型已切换为 {model_name}", severity="information")
 
@@ -441,13 +432,11 @@ class ChatScreen(Screen):
 
     def action_scroll_top(self) -> None:
         self._auto_scroll = False
-        log = self.query_one("#chat-messages", RichLog)
-        log.scroll_home(animate=False)
+        self.query_one("#chat-messages", RichLog).scroll_home(animate=False)
 
     def action_scroll_bottom(self) -> None:
         self._auto_scroll = True
-        log = self.query_one("#chat-messages", RichLog)
-        log.scroll_end(animate=False)
+        self.query_one("#chat-messages", RichLog).scroll_end(animate=False)
 
     def action_show_status(self) -> None:
         self._cmd_status("")
