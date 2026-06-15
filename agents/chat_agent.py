@@ -37,6 +37,7 @@ class AgentConfig:
     max_tokens: int = 4096
     temperature: float = 0.7
     api_key: str = ""
+    base_url: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -116,7 +117,10 @@ def _call_anthropic(
     """调用 Anthropic Messages API。"""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    if config.base_url:
+        client_kwargs["base_url"] = config.base_url
+    client = anthropic.Anthropic(**client_kwargs)
 
     messages: list[dict[str, Any]] = []
     if history:
@@ -155,12 +159,13 @@ def _call_openai_compatible(
     except ImportError:
         raise RuntimeError("需要安装 openai 包: pip install openai")
 
-    # 根据模型选择 base_url
-    base_url = None
-    if model_id.startswith("deepseek"):
-        base_url = "https://api.deepseek.com/v1"
-    elif model_id.startswith("gemini"):
-        base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+    # 根据模型选择 base_url（用户自定义优先）
+    base_url = config.base_url or None
+    if not base_url:
+        if model_id.startswith("deepseek"):
+            base_url = "https://api.deepseek.com/v1"
+        elif model_id.startswith("gemini"):
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 
     client_kwargs = {"api_key": api_key}
     if base_url:
