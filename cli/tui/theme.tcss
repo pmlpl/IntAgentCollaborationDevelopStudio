@@ -511,3 +511,56 @@ Notification {
 #chat-input:focus {
     border: solid #58a6ff;
 }
+
+/* ── ModelConfigBar ── */
+
+#model-config-bar {
+    height: auto;
+    max-height: 12;
+    background: #161b22;
+    border-top: solid #30363d;
+    padding: 0 1;
+}
+
+#config-summary {
+    height: 1;
+    background: #161b22;
+    color: #c9d1d9;
+    padding: 0 1;
+}
+
+#config-expanded {
+    height: auto;
+    background: #0f1729;
+    padding: 0 1;
+}
+
+.config-row {
+    height: 3;
+    margin: 0;
+}
+
+.config-label {
+    width: 6;
+    height: 3;
+    content-align: right middle;
+    color: #8b949e;
+    padding: 0 1 0 0;
+}
+
+.config-input {
+    width: 1fr;
+    max-height: 3;
+}
+
+.config-actions {
+    height: 3;
+    align: right middle;
+    padding: 0 0 1 0;
+}
+
+.config-actions Button {
+    margin: 0 1;
+    min-width: 10;
+    height: 3;
+}
