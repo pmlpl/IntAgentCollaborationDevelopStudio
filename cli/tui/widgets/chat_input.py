@@ -87,6 +87,7 @@ COMMANDS: dict[str, str] = {
     "filter": "只显示指定 Agent 的消息",
     "clear": "清空当前屏幕（不删数据）",
     "help": "显示所有命令帮助",
+    "model": "切换对话模型（Claude / GPT / DeepSeek）",
 }
 
 

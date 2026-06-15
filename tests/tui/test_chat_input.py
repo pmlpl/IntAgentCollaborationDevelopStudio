@@ -66,10 +66,11 @@ class TestGetCompletions:
 class TestFilterCommands:
     def test_empty_prefix_returns_all(self):
         results = filter_commands("")
-        assert len(results) == 8
+        assert len(results) == 9
         names = [r[0] for r in results]
         assert "task" in names
         assert "help" in names
+        assert "model" in names
 
     def test_ta_matches_task(self):
         results = filter_commands("ta")
