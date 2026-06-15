@@ -4,6 +4,7 @@ from __future__ import annotations
 from textual.app import App
 
 from cli.tui.screens.agent_list import AgentListScreen
+from cli.tui.screens.chat import ChatScreen
 from cli.tui.screens.briefing import TaskDispatchScreen
 from cli.tui.screens.dashboard import DashboardScreen
 from cli.tui.screens.onboarding import OnboardingScreen
@@ -28,6 +29,7 @@ class StudioApp(App):
         "dashboard": DashboardScreen,
         "review": ReviewScreen,
         "agent_list": AgentListScreen,
+        "chat": ChatScreen,
     }
 
     def __init__(self) -> None:

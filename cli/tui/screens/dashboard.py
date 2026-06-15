@@ -4,13 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Footer, Header, ProgressBar, Static
+from textual.widgets import Footer, Header, Input, ProgressBar, Static
 
 from cli.tui.screens.briefing import TaskDispatchScreen
 from cli.tui.screens.expand import ExpandScreen
 from cli.tui.screens.onboarding import OnboardingScreen
+from cli.tui.widgets.message_log import render_agent_activity, render_message_log
 from cli.tui.widgets.org_tree import render_org_tree
 from cli.tui.widgets.orchestration_panel import render_orchestration_panel
 from cli.tui.widgets.task_panel import render_task_panel
@@ -18,6 +19,8 @@ from core.config.agent_policy import agent_enabled
 from core.dispatch.briefing import load_brief, mark_brief_dispatched
 from core.dispatch.dispatcher import get_dispatcher
 from core.dispatch.orchestration_progress import compute_orchestration_progress
+from core.ipc.ceo_chat import send_ceo_feedback
+from core.ipc.message_log import MessageLogCollector
 from core.project import (
     clear_stale_current_project,
     get_project_root,
@@ -38,6 +41,7 @@ class DashboardScreen(Screen):
         ("e", "expand", "扩建"),
         ("s", "refresh", "刷新"),
         ("r", "review", "审批"),
+        ("c", "open_chat", "通信"),
         ("p", "projects", "项目中心"),
         ("a", "agents", "Agent 目录"),
         ("shift+n", "new_project", "新建项目"),
@@ -49,31 +53,35 @@ class DashboardScreen(Screen):
         self.project_name = project_name
         self._pending_task_id: str | None = None
         self._pending_description: str = ""
+        self._msg_collector: MessageLogCollector | None = None
+        self._message_history: list = []  # list[MessageRecord]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        # 顶部状态栏
         yield Static("", id="dash-status-bar")
-        # 主面板区：组织树 + 任务并排
         yield Horizontal(
             Static("", id="org-panel"),
             Static("", id="task-panel"),
             id="main-panels",
         )
-        # 编排进度区（仅在编排中可见）
-        yield Vertical(
+        # 底部栏：编排进度 + Agent 状态 + 消息日志 + 聊天输入
+        yield VerticalScroll(
             Static("", id="orch-panel-text"),
             ProgressBar(total=100, show_eta=False, id="orch-progress"),
-            id="orch-container",
+            Static("", id="agent-activity"),
+            Static("", id="message-log"),
+            Input(placeholder="输入消息按回车发送给主管…", id="ceo-chat-input"),
+            id="bottom-bar",
         )
         yield Footer()
+
+    # ── 生命周期 ──
 
     def on_mount(self) -> None:
         if not self.project_name and getattr(self.app, "project_name", None):
             self.project_name = self.app.project_name
-        self.query_one("#orch-container").display = False
-        # 3 秒自动刷新，降低 IO 压力；编排中提速到 1 秒
-        self.set_interval(3, self._refresh)
+        self._hide_orch_parts()
+        self.set_interval(1.5, self._refresh)
         self._refresh()
         pending = getattr(self.app, "pending_orchestration", None)
         if pending:
@@ -85,11 +93,24 @@ class DashboardScreen(Screen):
             self.action_dispatch_task()
 
     def on_screen_resume(self) -> None:
-        """从项目中心返回时重新校验当前项目（可能已被删除）。"""
         self._refresh()
 
+    # ── 编排区显示/隐藏 ──
+
+    def _hide_orch_parts(self) -> None:
+        """隐藏编排专属元素（进度条 + 聊天框）。"""
+        self.query_one("#orch-panel-text").display = False
+        self.query_one("#orch-progress").display = False
+        self.query_one("#ceo-chat-input").display = False
+
+    def _show_orch_parts(self) -> None:
+        """显示编排专属元素。"""
+        self.query_one("#orch-panel-text").display = True
+        self.query_one("#orch-progress").display = True
+
+    # ── 项目同步 ──
+
     def _sync_project_name(self) -> bool:
-        """同步并校验当前项目；失效则清空缓存指针。"""
         root = get_studio_root()
         candidate = self.project_name or getattr(self.app, "project_name", None)
         if candidate and not project_exists(root, candidate):
@@ -108,7 +129,6 @@ class DashboardScreen(Screen):
         return True
 
     def _show_no_project(self) -> None:
-        """当前项目不存在时清空指挥舱面板。"""
         self.project_name = None
         self.app.project_name = None
         self._pending_task_id = None
@@ -117,7 +137,9 @@ class DashboardScreen(Screen):
         self.query_one("#task-panel", Static).update(
             "[dim]当前项目已删除或不可用。[/]\n按 [bold]P[/] 打开项目中心选择或新建项目。"
         )
-        self.query_one("#orch-container").display = False
+        self._hide_orch_parts()
+        self.query_one("#agent-activity", Static).update("")
+        self.query_one("#message-log", Static).update("")
         self.query_one("#dash-status-bar", Static).update(
             "  [bold red]当前项目已不存在，按 P 打开项目中心[/]"
         )
@@ -128,8 +150,9 @@ class DashboardScreen(Screen):
         self._show_no_project()
         return False
 
+    # ── 编排启动 ──
+
     def _start_orchestration(self, description: str) -> None:
-        """创建根任务并启动主管拆解编排。"""
         root = get_studio_root()
         try:
             if not self._ensure_project():
@@ -155,46 +178,108 @@ class DashboardScreen(Screen):
             self.notify(str(exc), title="下达失败", severity="error")
             self.query_one("#dash-status-bar", Static).update(f"  [red]下达失败: {exc}[/]")
 
+    # ── 编排进度刷新 ──
+
     def _update_orchestration_ui(self, disp, root: Path) -> None:
-        """刷新编排进度条。"""
         if not self._pending_task_id:
-            self.query_one("#orch-container").display = False
+            self._hide_orch_parts()
             return
 
-        # 编排中才频繁计算进度；已完成/失败后不再调用 try_complete
         disp.try_complete_orchestration(root, self._pending_task_id, spawn_terminals=True)
 
-        project_dir = disp.project_dir
         prog = compute_orchestration_progress(
-            project_dir,
+            disp.project_dir,
             self._pending_task_id,
             description=self._pending_description,
             tasks=disp.get_status(),
             states=disp.get_agent_states(),
         )
-        self.query_one("#orch-container").display = True
+        self._show_orch_parts()
         self.query_one("#orch-panel-text", Static).update(render_orchestration_panel(prog))
         bar = self.query_one("#orch-progress", ProgressBar)
         bar.progress = prog.percent
-        color = "red" if prog.failed else "green" if prog.done else "yellow"
+
+        color = ("red" if prog.failed else "green" if prog.done
+                 else "cyan" if prog.percent >= 50 else "yellow")
         self.query_one("#dash-status-bar", Static).update(
             f"  [{color}]编排 {prog.percent}% — {prog.message}[/]"
         )
 
+        self._update_comm_hub(disp, show_chat=True)
+
         if prog.done:
-            self.notify(
-                "编排完成：各 Worker 应已弹出交互式 Agent 终端",
-                title="任务下达",
-                severity="information",
-            )
+            self.notify(f"编排完成：{prog.message}", title="任务完成", severity="information")
             self._pending_task_id = None
             self._pending_description = ""
-            self.query_one("#orch-container").display = False
+            self._hide_orch_parts()
         elif prog.failed:
             self.notify(prog.message, title="编排失败", severity="error")
             self._pending_task_id = None
             self._pending_description = ""
-            self.query_one("#orch-container").display = False
+            self._hide_orch_parts()
+
+    # ── 通信中枢 ──
+
+    def _update_comm_hub(self, disp, *, show_chat: bool = False) -> None:
+        project_dir = disp.project_dir
+
+        if self._msg_collector is None or self._msg_collector.project_dir != project_dir:
+            self._msg_collector = MessageLogCollector(project_dir)
+            self._message_history.clear()
+
+        new_records = self._msg_collector.collect_new()
+        if new_records:
+            self._message_history.extend(new_records)
+            if len(self._message_history) > 200:
+                self._message_history = self._message_history[-200:]
+
+        self.query_one("#message-log", Static).update(
+            render_message_log(self._message_history[-50:])
+        )
+
+        positions = disp.list_positions()
+        states = disp.get_agent_states()
+        self.query_one("#agent-activity", Static).update(
+            render_agent_activity(positions, states)
+        )
+
+        self.query_one("#ceo-chat-input").display = show_chat
+
+    def _on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "ceo-chat-input":
+            return
+        text = event.value.strip()
+        if not text:
+            return
+
+        root = get_studio_root()
+        if not self._sync_project_name():
+            return
+
+        disp = get_dispatcher(root, self.project_name)
+        try:
+            manager_id = disp._root_manager_id()
+        except RuntimeError:
+            self.notify("未找到主管", severity="warning")
+            return
+
+        send_ceo_feedback(
+            project_dir=disp.project_dir,
+            manager_id=manager_id,
+            text=text,
+            task_id=self._pending_task_id or "",
+        )
+        event.input.value = ""
+        self.notify("已发送给主管", severity="information")
+
+    def action_open_chat(self) -> None:
+        """打开主管聊天频道。"""
+        if not self._ensure_project():
+            self.notify("请先选择或创建项目", severity="warning")
+            return
+        self.app.push_screen("chat")
+
+    # ── 主刷新 ──
 
     def _refresh(self) -> None:
         root = get_studio_root()
@@ -217,34 +302,30 @@ class DashboardScreen(Screen):
 
         self.query_one("#org-panel", Static).update(render_org_tree(positions))
         self.query_one("#task-panel", Static).update(
-            render_task_panel(
-                tasks,
-                positions,
-                states,
-                highlight_task_id=self._pending_task_id,
-            )
+            render_task_panel(tasks, positions, states, highlight_task_id=self._pending_task_id)
         )
 
         if self._pending_task_id:
             self._update_orchestration_ui(disp, root)
             return
 
-        self.query_one("#orch-container").display = False
+        self._hide_orch_parts()
+        self._update_comm_hub(disp)
+
         sup = "Supervisor ✓" if SupervisorClient(root).health() else "Supervisor …"
         mgr_pending = len(disp.get_manager_reviews())
         ceo_pending = len(disp.get_pending_reviews())
-
-        # Agent 启用状态摘要
+        awaiting_delivery = sum(
+            1 for t in tasks
+            if t.get("status") in ("assigned", "in_progress", "submitted") and t.get("assignee")
+        )
         agent_status = _build_agent_status(root, positions)
 
-        # 顶部状态栏
-        parts = [
-            f"[bold cyan]{self.project_name}[/]",
-            f"[dim]{project_root}[/]",
-            sup,
-        ]
+        parts = [f"[bold cyan]{self.project_name}[/]", f"[dim]{project_root}[/]", sup]
         if agent_status:
             parts.append(agent_status)
+        if awaiting_delivery:
+            parts.append(f"[bold yellow]◆ Worker 执行中 {awaiting_delivery}[/]")
         if mgr_pending:
             parts.append(f"[yellow]主管审查中 {mgr_pending}[/]")
         if ceo_pending:
@@ -252,12 +333,12 @@ class DashboardScreen(Screen):
         parts.append("[dim]N 下达任务[/]")
         self.query_one("#dash-status-bar", Static).update("  " + " · ".join(parts))
 
+    # ── 快捷键动作 ──
+
     def action_refresh(self) -> None:
         self._refresh()
 
     def action_dispatch_task(self) -> None:
-        """统一下达任务：CEO 填写业务目标 → 审批。"""
-
         def on_done(final_task: str | None) -> None:
             if final_task:
                 self._start_orchestration(final_task)
@@ -266,8 +347,7 @@ class DashboardScreen(Screen):
             self.notify("请先选择或创建项目", severity="warning")
             return
         self.app.push_screen(
-            TaskDispatchScreen(project_name=self.project_name, is_new=False),
-            on_done,
+            TaskDispatchScreen(project_name=self.project_name, is_new=False), on_done
         )
 
     def action_review(self) -> None:
@@ -302,7 +382,6 @@ class DashboardScreen(Screen):
 
 
 def _build_agent_status(root: Path, positions: list[dict]) -> str:
-    """构建 Agent 启用状态摘要文本。"""
     agent_ids: set[str] = set()
     for pos in positions:
         aid = pos.get("agent", "")
