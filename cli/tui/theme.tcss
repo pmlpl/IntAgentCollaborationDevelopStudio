@@ -564,3 +564,10 @@ Notification {
     min-width: 10;
     height: 3;
 }
+
+#config-test-status {
+    height: 1;
+    background: #161b22;
+    padding: 0 1;
+    color: #c9d1d9;
+}

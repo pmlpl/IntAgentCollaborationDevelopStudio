@@ -58,6 +58,69 @@ def _get_api_key(config: AgentConfig) -> str:
     return ""
 
 
+def check_connection(config: AgentConfig) -> tuple[bool, str]:
+    """测试 API 连接是否正常。
+
+    发送一条最短请求，验证 key / model / base_url 是否正确。
+
+    Returns:
+        (success, message) — success=True 时 message 包含实际模型标识；False 时为错误信息
+    """
+    model_id = _MODEL_MAP.get(config.model, config.model)
+    api_key = _get_api_key(config)
+
+    if not api_key:
+        return False, f"未设置 API Key（需要 {_env_hint(config.model)}）"
+
+    # Claude 模型：用 Anthropic SDK
+    if model_id.startswith("claude"):
+        try:
+            import anthropic
+            client_kwargs: dict[str, Any] = {"api_key": api_key}
+            if config.base_url:
+                client_kwargs["base_url"] = config.base_url
+            client = anthropic.Anthropic(**client_kwargs)
+            response = client.messages.create(
+                model=model_id,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            # 返回实际使用的模型 ID
+            actual_model = getattr(response, "model", model_id)
+            return True, f"已连接 {actual_model}"
+        except Exception as exc:
+            return False, str(exc)[:120]
+
+    # 其他模型：用 OpenAI 兼容接口
+    try:
+        import openai
+    except ImportError:
+        return False, "需要安装 openai 包: pip install openai"
+
+    base_url = config.base_url or None
+    if not base_url:
+        if model_id.startswith("deepseek"):
+            base_url = "https://api.deepseek.com/v1"
+        elif model_id.startswith("gemini"):
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    client_kwargs = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+
+    try:
+        client = openai.OpenAI(**client_kwargs)
+        response = client.chat.completions.create(
+            model=model_id,
+            max_tokens=10,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        actual_model = getattr(response, "model", model_id)
+        return True, f"已连接 {actual_model}"
+    except Exception as exc:
+        return False, str(exc)[:120]
+
+
 def chat_agent_respond(
     config: AgentConfig,
     user_message: str,
