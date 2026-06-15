@@ -69,3 +69,148 @@ def render_chat_message(rec: MessageRecord) -> str:
                 lines.append(f"   {line}")
 
     return "\n".join(lines)
+
+
+from dataclasses import dataclass
+from textual.widgets import Input
+from textual.app import ComposeResult
+from textual.containers import Horizontal
+from textual.widgets import Static
+
+
+# ── Slash 命令定义 ──
+
+COMMANDS: dict[str, str] = {
+    "task": "下派新任务给 Manager",
+    "review": "查看/审批任务评审结果",
+    "status": "显示当前编排进度概览",
+    "escalations": "列出所有待 CEO 决策的升级",
+    "history": "加载最近 n 条历史消息",
+    "filter": "只显示指定 Agent 的消息",
+    "clear": "清空当前屏幕（不删数据）",
+    "help": "显示所有命令帮助",
+}
+
+
+@dataclass
+class SlashCommand:
+    """解析后的斜杠命令。"""
+    name: str
+    args: str
+
+
+def parse_slash_command(text: str) -> SlashCommand | None:
+    """解析用户输入为斜杠命令。如果不是 / 开头则返回 None。"""
+    text = text.strip()
+    if not text.startswith("/") or len(text) < 2:
+        return None
+    parts = text[1:].split(maxsplit=1)
+    name = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+    return SlashCommand(name=name, args=args)
+
+
+def get_completions(
+    text: str,
+    agent_ids: list[str] | None = None,
+) -> list[str]:
+    """根据当前输入返回补全候选列表。"""
+    text = text.strip()
+    if not text:
+        return []
+
+    if agent_ids is None:
+        agent_ids = []
+
+    results: list[str] = []
+
+    # / 命令补全
+    if text.startswith("/"):
+        prefix = text[1:].lower()
+        for cmd_name in COMMANDS:
+            if cmd_name.startswith(prefix) and cmd_name != prefix:
+                results.append(f"/{cmd_name}")
+
+    # @ 提及补全
+    elif text.startswith("@"):
+        prefix = text[1:].lower()
+        for agent_id in agent_ids:
+            if agent_id.lower().startswith(prefix) and agent_id.lower() != prefix:
+                results.append(f"@{agent_id}")
+
+    return results
+
+
+# ── ChatInput Widget ──
+
+class ChatInput(Input):
+    """带补全功能的聊天输入框。"""
+
+    def __init__(self, agent_ids: list[str] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._agent_ids = agent_ids or []
+        self._history: list[str] = []
+        self._history_idx: int = -1
+        self._completions: list[str] = []
+        self._completion_idx: int = -1
+
+    def push_history(self, text: str) -> None:
+        """记录一条已发送的消息到历史。"""
+        if text and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+            if len(self._history) > 100:
+                self._history = self._history[-100:]
+        self._history_idx = -1
+
+    def on_key(self, event) -> None:
+        """拦截 Tab / Up / Down 键。"""
+        if event.key == "tab":
+            self._handle_tab()
+            event.prevent_default()
+        elif event.key == "up" and self.value == "":
+            self._history_prev()
+            event.prevent_default()
+        elif event.key == "down" and self.value == "":
+            self._history_next()
+            event.prevent_default()
+
+    def _handle_tab(self) -> None:
+        """Tab 补全：循环补全候选。"""
+        if not self.value:
+            return
+
+        if not self._completions or self._completion_idx == -1:
+            self._completions = get_completions(self.value, self._agent_ids)
+            if not self._completions:
+                return
+            self._completion_idx = 0
+        else:
+            self._completion_idx = (self._completion_idx + 1) % len(self._completions)
+
+        self.value = self._completions[self._completion_idx]
+
+    def _history_prev(self) -> None:
+        """上箭头：浏览历史（从新到旧）。"""
+        if not self._history:
+            return
+        if self._history_idx == -1:
+            self._history_idx = len(self._history) - 1
+        elif self._history_idx > 0:
+            self._history_idx -= 1
+        self.value = self._history[self._history_idx]
+
+    def _history_next(self) -> None:
+        """下箭头：浏览历史（从旧到新）。"""
+        if self._history_idx == -1:
+            return
+        if self._history_idx < len(self._history) - 1:
+            self._history_idx += 1
+            self.value = self._history[self._history_idx]
+        else:
+            self._history_idx = -1
+            self.value = ""
+
+    def _on_input_changed(self, event) -> None:
+        """输入变化时重置补全状态。"""
+        self._completions = []
+        self._completion_idx = -1
