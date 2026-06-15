@@ -17,6 +17,7 @@ from cli.tui.widgets.chat_input import (
     parse_slash_command,
     COMMANDS,
 )
+from cli.tui.widgets.model_config import ModelConfigBar
 from core.dispatch.dispatcher import get_dispatcher
 from core.ipc.ceo_chat import send_ceo_feedback
 from core.ipc.message_log import MessageLogCollector
@@ -91,6 +92,7 @@ class ChatScreen(Screen):
         ("ctrl+end", "scroll_bottom", "底部"),
         ("s", "show_status", "状态"),
         ("e", "show_escalations", "升级"),
+        ("m", "toggle_model_config", "模型"),
     ]
 
     def __init__(
@@ -127,6 +129,7 @@ class ChatScreen(Screen):
             agent_ids=self._agent_ids(),
             id="chat-input-area",
         )
+        yield ModelConfigBar(project_root=self._project_dir, id="model-config-bar")
         yield Footer()
 
     def _build_header_text(self) -> str:
@@ -135,7 +138,12 @@ class ChatScreen(Screen):
             parts.append(f"Manager: {self._manager_id}")
         if self._task_id:
             parts.append(f"任务: {self._task_id}")
-        model_name = AVAILABLE_MODELS.get(self._model, self._model)
+        try:
+            bar = self.query_one("#model-config-bar", ModelConfigBar)
+            current_model = bar.get_current_model()
+        except Exception:
+            current_model = self._model
+        model_name = AVAILABLE_MODELS.get(current_model, current_model)
         parts.append(f"模型: {model_name}")
         parts.append("esc:返回")
         return " │ ".join(parts)
@@ -309,9 +317,10 @@ class ChatScreen(Screen):
     def _ask_manager_agent(self, text: str) -> None:
         """后台线程调用内置 Agent API。"""
         try:
-            from agents.chat_agent import AgentConfig, chat_agent_respond
+            from agents.chat_agent import chat_agent_respond
 
-            config = AgentConfig(model=self._model)
+            bar = self.query_one("#model-config-bar", ModelConfigBar)
+            config = bar.build_agent_config()
 
             # 构建历史消息
             history: list[dict[str, str]] = []
@@ -338,7 +347,8 @@ class ChatScreen(Screen):
                 reply = reply[:1997] + "..."
             self._recent_history.append(f"Manager: {reply}")
 
-            model_name = AVAILABLE_MODELS.get(self._model, self._model)
+            bar = self.query_one("#model-config-bar", ModelConfigBar)
+            model_name = AVAILABLE_MODELS.get(bar.get_current_model(), bar.get_current_model())
             _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 {self._manager_id}[/] [dim]{now}[/] [#4ecdc4]({model_name})[/]")
             for line in reply.split("\n"):
                 _w(log, f"[#4ecdc4]│[/]   {line}")
@@ -427,6 +437,9 @@ class ChatScreen(Screen):
             self.notify(f"未知模型: {model_key}，可用: {', '.join(AVAILABLE_MODELS)}", severity="warning")
             return
         self._model = model_key
+        bar = self.query_one("#model-config-bar", ModelConfigBar)
+        bar._model = model_key
+        bar._update_summary()
         model_name = AVAILABLE_MODELS[model_key]
         self._show_system_message(f"已切换模型: {model_name}")
         self.query_one("#chat-header", Static).update(self._build_header_text())
@@ -457,3 +470,8 @@ class ChatScreen(Screen):
 
     def action_show_escalations(self) -> None:
         self._cmd_escalations("")
+
+    def action_toggle_model_config(self) -> None:
+        """切换模型配置栏展开/折叠。"""
+        bar = self.query_one("#model-config-bar", ModelConfigBar)
+        bar.toggle()
