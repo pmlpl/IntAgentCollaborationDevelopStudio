@@ -80,6 +80,9 @@ class ChatScreen(Screen):
     def on_mount(self) -> None:
         """初始化 collector + 加载历史 + 启动轮询。"""
         self._sync_context()
+        # 同步 Agent ID 列表到 ChatInputArea（compose 时 context 尚未就绪）
+        input_area = self.query_one("#chat-input-area", ChatInputArea)
+        input_area._agent_ids = self._agent_ids()
         if self._project_dir:
             self._collector = MessageLogCollector(self._project_dir)
             self._load_history()
