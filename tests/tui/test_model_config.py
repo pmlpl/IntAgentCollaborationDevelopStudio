@@ -47,3 +47,18 @@ def test_mask_api_key():
     assert mask_key("sk-abc") == "**-abc"
     assert mask_key("sk-ant-12345678") == "***********5678"
     assert mask_key("short") == "*hort"  # 5 chars: first char masked, last 4 visible
+
+
+def test_build_agent_config():
+    """build_agent_config returns an AgentConfig with the bar's current values."""
+    from cli.tui.widgets.model_config import ModelConfigBar
+
+    bar = ModelConfigBar.__new__(ModelConfigBar)
+    bar._model = "deepseek"
+    bar._api_key = "sk-test"
+    bar._base_url = "https://custom.api.com/v1"
+
+    config = bar.build_agent_config()
+    assert config.model == "deepseek"
+    assert config.api_key == "sk-test"
+    assert config.base_url == "https://custom.api.com/v1"
