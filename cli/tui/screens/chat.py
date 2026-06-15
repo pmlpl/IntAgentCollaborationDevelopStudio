@@ -1,7 +1,9 @@
 """主管聊天频道 — CEO ↔ Manager 全场景对话界面。"""
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.markup import render as rich_render
@@ -17,7 +19,7 @@ from cli.tui.widgets.chat_input import (
     parse_slash_command,
     COMMANDS,
 )
-from cli.tui.widgets.model_config import ModelConfigBar
+from cli.tui.widgets.model_config import ModelConfigBar, load_chat_settings
 from core.dispatch.dispatcher import Dispatcher, get_dispatcher
 from core.ipc.ceo_chat import send_ceo_feedback
 from core.ipc.message_log import MessageLogCollector
@@ -142,11 +144,17 @@ class ChatScreen(Screen):
             parts.append(f"Manager: {self._manager_id}")
         if self._task_id:
             parts.append(f"任务: {self._task_id}")
+        # 优先从 ModelConfigBar 读取，回退到持久化配置
         try:
             bar = self.query_one("#model-config-bar", ModelConfigBar)
             current_model = bar.get_current_model()
         except Exception:
-            current_model = self._model
+            try:
+                from core.project import get_studio_root
+                settings = load_chat_settings(get_studio_root())
+                current_model = settings["model"]
+            except Exception:
+                current_model = self._model
         model_name = AVAILABLE_MODELS.get(current_model, current_model)
         parts.append(f"模型: {model_name}")
         parts.append("esc:返回")
@@ -162,6 +170,26 @@ class ChatScreen(Screen):
 
     # ── 生命周期 ──
 
+    def _chat_log_path(self) -> Path | None:
+        if not self._project_dir:
+            return None
+        return self._project_dir / "chat_log.jsonl"
+
+    def _append_chat_log(self, role: str, content: str) -> None:
+        """追加一条消息到聊天日志（持久化）。"""
+        import json
+        path = self._chat_log_path()
+        if not path:
+            return
+        from datetime import datetime, timezone
+        line = json.dumps({
+            "role": role,
+            "content": content,
+            "time": datetime.now(timezone.utc).isoformat(),
+        }, ensure_ascii=False)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
     def on_mount(self) -> None:
         self._sync_context()
         input_area = self.query_one("#chat-input-area", ChatInputArea)
@@ -171,6 +199,10 @@ class ChatScreen(Screen):
             self._load_history()
         self.set_interval(2.0, self._poll_messages)
         self.set_interval(3.0, self._poll_orchestration)
+        # 配置加载后刷新 header（model 可能已从持久化配置读入）
+        self.set_timer(0.3, lambda: self.query_one("#chat-header", Static).update(self._build_header_text()))
+        # 加载持久化聊天记录
+        self._load_chat_log()
 
     def _sync_context(self) -> None:
         if self._project_dir:
@@ -198,9 +230,43 @@ class ChatScreen(Screen):
             self._rendered_ids.add(rec.message.id)
         recent = records[-30:]
         log = self.query_one("#chat-messages", RichLog)
-        _w(log, "[dim]── 会话开始 ──[/]", scroll_end=False)
+        _w(log, "[dim]── inbox 历史 ──[/]", scroll_end=False)
         for rec in recent:
             _w(log, render_chat_message(rec), scroll_end=False)
+
+    def _load_chat_log(self) -> None:
+        """加载持久化聊天记录（纯文本 JSONL）。"""
+        import json
+        path = self._chat_log_path()
+        if not path or not path.is_file():
+            return
+        log = self.query_one("#chat-messages", RichLog)
+        _w(log, "[dim]── 上次对话 ──[/]", scroll_end=False)
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    role = entry.get("role", "")
+                    content = entry.get("content", "")
+                    time_str = entry.get("time", "")[:16].replace("T", " ")
+                    if role == "ceo":
+                        _w(log, f"[#ff6b9d]👤 CEO[/] [dim]{time_str}[/]\n   {content}", scroll_end=False)
+                    elif role == "manager":
+                        _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 Manager[/] [dim]{time_str}[/]")
+                        for cline in content.split("\n"):
+                            _w(log, f"[#4ecdc4]│[/]   {cline}")
+                        _w(log, "", scroll_end=False)
+                    elif role == "system":
+                        _w(log, f"[#f9ca24]│[/] [#f9ca24]🔔 系统[/] [dim]{time_str}[/]\n[#f9ca24]│[/]    {content}",
+                           scroll_end=False)
+        except Exception:
+            pass
 
     # ── 轮询 ──
 
@@ -311,6 +377,7 @@ class ChatScreen(Screen):
         log = self.query_one("#chat-messages", RichLog)
         _w(log, f"[#ff6b9d]👤 CEO[/] [dim]{now}[/]\n   {text}",
            scroll_end=self._auto_scroll)
+        self._append_chat_log("ceo", text)
         self._recent_history.append(f"CEO: {text}")
 
         # 思考 + 异步调用 Agent
@@ -354,6 +421,7 @@ class ChatScreen(Screen):
             if len(reply) > 2000:
                 reply = reply[:1997] + "..."
             self._recent_history.append(f"Manager: {reply}")
+            self._append_chat_log("manager", reply)
 
             bar = self.query_one("#model-config-bar", ModelConfigBar)
             model_name = AVAILABLE_MODELS.get(bar.get_current_model(), bar.get_current_model())

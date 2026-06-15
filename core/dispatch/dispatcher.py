@@ -446,7 +446,14 @@ class Dispatcher:
         spawned = self._load_spawned_worker_ids(root_task_id)
 
         for path in sorted(self.tasks_active.glob("*.yaml")):
-            task = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not path.is_file():
+                continue
+            try:
+                task = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not task:
+                continue
             if task.get("parent_id") != root_task_id:
                 continue
             if task.get("status") != "assigned":
@@ -519,7 +526,9 @@ class Dispatcher:
 
     def _load_task(self, task_id: str) -> dict[str, Any]:
         path = self.tasks_active / f"{task_id}.yaml"
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not path.is_file():
+            return {}
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
     def _update_task_status(self, task_id: str, status: str) -> None:
         path = self.tasks_active / f"{task_id}.yaml"
@@ -546,7 +555,14 @@ class Dispatcher:
         if not self.tasks_active.exists():
             return tasks
         for path in sorted(self.tasks_active.glob("*.yaml")):
-            tasks.append(yaml.safe_load(path.read_text(encoding="utf-8")))
+            if not path.is_file():
+                continue
+            try:
+                task = yaml.safe_load(path.read_text(encoding="utf-8"))
+                if task:
+                    tasks.append(task)
+            except Exception:
+                pass
         return tasks
 
     def get_pending_reviews(self) -> list[dict[str, Any]]:
