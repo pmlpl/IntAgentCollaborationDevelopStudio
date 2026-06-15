@@ -23,7 +23,19 @@ from core.ipc.message_log import MessageLogCollector
 
 # ── 工具函数 ──
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
+_ANSI_RE = re.compile(
+    r"""
+    \x1b(?:                        # ESC 序列
+        \[[\d;?]*[a-zA-Z]          # CSI: \x1b[...X（含 ? 私有模式如 ?25l）
+        | \][^\x07]*\x07           # OSC: \x1b]...\x07
+        | [()][A-Z0-9]             # 字符集切换
+        | [=#<>]                   # DEC 序列
+        | [A-HJM-Z]                # 单字符 ESC 序列
+        | .                        # fallback
+    )
+    """,
+    re.VERBOSE | re.DOTALL,
+)
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 AVAILABLE_MODELS = {
@@ -50,6 +62,7 @@ def _strip_ansi(text: str) -> str:
     """去除 ANSI 转义码和控制字符。"""
     text = _ANSI_RE.sub("", text)
     text = _CONTROL_RE.sub("", text)
+    text = text.replace("\r", "")
     return text.strip()
 
 
@@ -100,6 +113,8 @@ class ChatScreen(Screen):
         self._recent_history: list[str] = []
         # 本地已渲染的消息 ID（防止轮询重复渲染）
         self._rendered_ids: set[str] = set()
+        # Agent 回复期间暂停轮询渲染（防止外部 Agent CLI 往 inbox 写消息导致重复）
+        self._pause_poll: bool = False
 
     # ── 布局 ──
 
@@ -180,13 +195,14 @@ class ChatScreen(Screen):
         if not self._collector:
             return
         new_records = self._collector.collect_new()
+        # Agent 回复期间跳过渲染（防止 CLI Agent 写 inbox 导致重复）
+        if self._pause_poll:
+            return
         has_new = False
         for rec in new_records:
-            # 跳过本地已渲染的消息
             if rec.message.id in self._rendered_ids:
                 continue
             self._rendered_ids.add(rec.message.id)
-            # 清理 ANSI（外部 Agent 可能带脏输出）
             msg = rec.message
             if msg.payload and isinstance(msg.payload.get("text"), str):
                 msg.payload["text"] = _strip_ansi(msg.payload["text"])
@@ -286,6 +302,7 @@ class ChatScreen(Screen):
 
         # 思考 + 异步调用 Agent
         self._start_thinking()
+        self._pause_poll = True  # 暂停轮询渲染，防止 CLI Agent 写 inbox 重复
         self._ask_manager_agent(text)
 
     @work(thread=True, exclusive=True)
@@ -315,6 +332,7 @@ class ChatScreen(Screen):
 
     def _on_manager_reply(self, rc: int, output: str) -> None:
         self._stop_thinking()
+        self._pause_poll = False  # 恢复轮询渲染
         log = self.query_one("#chat-messages", RichLog)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -337,6 +355,7 @@ class ChatScreen(Screen):
 
     def _on_manager_error(self, error: str) -> None:
         self._stop_thinking()
+        self._pause_poll = False
         log = self.query_one("#chat-messages", RichLog)
         _w(log, f"[red]│[/] [red]⚠ 错误[/]\n"
                  f"[red]│[/]   Agent 调用失败: {error}",
