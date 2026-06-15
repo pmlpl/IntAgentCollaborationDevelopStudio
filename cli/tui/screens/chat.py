@@ -19,7 +19,7 @@ from cli.tui.widgets.chat_input import (
     parse_slash_command,
     COMMANDS,
 )
-from cli.tui.widgets.model_config import ModelConfigBar, load_chat_settings
+from cli.tui.widgets.model_config import ModelConfigBar, load_chat_settings, save_chat_settings
 from core.dispatch.dispatcher import Dispatcher, get_dispatcher
 from core.ipc.ceo_chat import send_ceo_feedback
 from core.ipc.message_log import MessageLogCollector
@@ -47,6 +47,24 @@ AVAILABLE_MODELS = {
     "deepseek": "DeepSeek",
     "gemini": "Gemini (Google)",
 }
+
+# 触发编排的关键词（CEO 消息包含这些词才启动编排）
+_ORCH_TRIGGER_KEYWORDS = [
+    "添加", "实现", "做", "开发", "创建", "修复", "改", "写",
+    "增加", "删除", "修改", "构建", "搭建", "新建", "重构",
+    "实现一下", "帮我做", "帮我写", "帮我改", "加一个", "写一个",
+    "帮我实现", "帮我开发", "帮我创建", "帮我修复",
+]
+
+
+def _looks_like_task(text: str) -> bool:
+    """判断 CEO 消息是否像是任务指令（应该触发编排）。"""
+    text_lower = text.lower()
+    for kw in _ORCH_TRIGGER_KEYWORDS:
+        if kw in text_lower:
+            return True
+    return False
+
 
 _THINKING_FRAMES = [
     "[#4ecdc4]◐[/] 主管正在思考",
@@ -90,6 +108,7 @@ class ChatScreen(Screen):
     """主管聊天频道。"""
     BINDINGS = [
         ("escape", "back", "返回"),
+        ("ctrl+c", "cancel_ai", "中断"),
         ("ctrl+home", "scroll_top", "顶部"),
         ("ctrl+end", "scroll_bottom", "底部"),
         ("s", "show_status", "状态"),
@@ -123,6 +142,10 @@ class ChatScreen(Screen):
         self._orch_task_id: str | None = None
         self._orch_root: Path | None = None
         self._orch_disp: Dispatcher | None = None
+        # 中断标志：Ctrl+C 设为 True
+        self._cancelled: bool = False
+        # 编排已公告的阶段（防止重复推送）
+        self._orch_last_phase: str = ""
 
     # ── 布局 ──
 
@@ -381,6 +404,7 @@ class ChatScreen(Screen):
         self._recent_history.append(f"CEO: {text}")
 
         # 思考 + 异步调用 Agent
+        self._cancelled = False  # 重置中断标志
         self._start_thinking()
         self._pause_poll = True  # 暂停轮询渲染，防止 CLI Agent 写 inbox 重复
         self._last_ceo_text = text  # 保存原始消息供编排使用
@@ -413,6 +437,9 @@ class ChatScreen(Screen):
     def _on_manager_reply(self, reply: str) -> None:
         self._stop_thinking()
         self._pause_poll = False
+        # 已被 Ctrl+C 中断，跳过显示回复
+        if self._cancelled:
+            return
         log = self.query_one("#chat-messages", RichLog)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -434,8 +461,8 @@ class ChatScreen(Screen):
                      f"[#4ecdc4]│[/]   [dim]（无回复内容）[/]",
                scroll_end=self._auto_scroll)
 
-        # Agent 回复完成后，自动触发编排（如果有项目连接）
-        if self._project_dir and self._manager_id:
+        # Agent 回复完成后，仅当 CEO 消息是任务指令时才触发编排
+        if self._project_dir and self._manager_id and _looks_like_task(self._last_ceo_text):
             self._start_orchestration(self._last_ceo_text)
 
     def _on_manager_error(self, error: str) -> None:
@@ -521,10 +548,13 @@ class ChatScreen(Screen):
                 root, self._orch_task_id, spawn_terminals=True
             )
             if progressed:
-                # 查找根任务状态
+                # 查找根任务状态，每个阶段只公告一次
                 for t in disp.get_status():
                     if t.get("id") == self._orch_task_id:
                         state = t.get("status", "")
+                        if state == self._orch_last_phase:
+                            break
+                        self._orch_last_phase = state
                         log = self.query_one("#chat-messages", RichLog)
                         if state == "assigned":
                             _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 编排进度[/]\n"
@@ -541,6 +571,7 @@ class ChatScreen(Screen):
                             self._orch_task_id = None
                             self._orch_root = None
                             self._orch_disp = None
+                            self._orch_last_phase = ""
                         break
 
             # 持续检查交付和审查
@@ -624,6 +655,17 @@ class ChatScreen(Screen):
         bar = self.query_one("#model-config-bar", ModelConfigBar)
         bar._model = model_key
         bar._update_summary()
+        # 持久化到配置文件
+        try:
+            from core.project import get_studio_root
+            save_chat_settings(
+                get_studio_root(),
+                model=model_key,
+                api_key=bar._api_key,
+                base_url=bar._base_url,
+            )
+        except Exception:
+            pass
         model_name = AVAILABLE_MODELS[model_key]
         self._show_system_message(f"已切换模型: {model_name}")
         self.query_one("#chat-header", Static).update(self._build_header_text())
@@ -659,3 +701,13 @@ class ChatScreen(Screen):
         """切换模型配置栏展开/折叠。"""
         bar = self.query_one("#model-config-bar", ModelConfigBar)
         bar.toggle()
+
+    def action_cancel_ai(self) -> None:
+        """中断当前 AI 输出。"""
+        if not self._is_thinking:
+            return
+        self._cancelled = True
+        self._stop_thinking()
+        log = self.query_one("#chat-messages", RichLog)
+        _w(log, f"[dim]│[/] [dim]── 已中断 ──[/]",
+           scroll_end=self._auto_scroll)
