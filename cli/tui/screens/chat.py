@@ -317,10 +317,12 @@ class ChatScreen(Screen):
     def _ask_manager_agent(self, text: str) -> None:
         """后台线程调用内置 Agent API。"""
         try:
-            from agents.chat_agent import chat_agent_respond
+            from agents.chat_agent import build_chat_system_prompt, chat_agent_respond
 
             bar = self.query_one("#model-config-bar", ModelConfigBar)
             config = bar.build_agent_config()
+            # 注入公司组织和项目上下文
+            config.system_prompt = build_chat_system_prompt(self._project_dir)
 
             # 构建历史消息
             history: list[dict[str, str]] = []

@@ -1,5 +1,10 @@
-"""Tests for agents/chat_agent.py — AgentConfig and base_url support."""
-from agents.chat_agent import AgentConfig, check_connection
+"""Tests for agents/chat_agent.py — AgentConfig, base_url, and system prompt."""
+import tempfile
+from pathlib import Path
+
+import yaml
+
+from agents.chat_agent import AgentConfig, build_chat_system_prompt, check_connection
 
 
 def test_agent_config_default_base_url():
@@ -36,3 +41,58 @@ def test_check_connection_no_key():
     finally:
         if old_key is not None:
             os.environ["ANTHROPIC_API_KEY"] = old_key
+
+
+def test_build_chat_system_prompt_no_project():
+    """Without project_dir, returns base prompt only."""
+    prompt = build_chat_system_prompt(None)
+    assert "主管" in prompt
+    assert "团队" not in prompt or "Worker Agent" in prompt
+
+
+def test_build_chat_system_prompt_with_positions():
+    """With a project_dir containing positions.yaml, injects team info."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = Path(tmpdir)
+        positions_data = {
+            "project": "测试项目",
+            "description": "一个测试项目",
+            "positions": [
+                {
+                    "id": "laowang", "name": "老王", "title": "技术主管",
+                    "parent": None, "is_manager": True, "agent": "opencode",
+                    "model": "deepseek-v4-pro",
+                    "resume": {"strengths": ["任务拆解"]},
+                },
+                {
+                    "id": "xiaohong", "name": "小红", "title": "前端开发",
+                    "parent": "laowang", "agent": "opencode",
+                    "model": "deepseek-v4-flash",
+                    "resume": {"strengths": ["Vue3组件", "Pinia"]},
+                },
+                {
+                    "id": "dazhuang", "name": "大壮", "title": "后端开发",
+                    "parent": "laowang", "agent": "hermes",
+                    "model": "deepseek-v4-pro",
+                    "resume": {"strengths": ["REST API"]},
+                },
+            ],
+        }
+        (project_dir / "positions.yaml").write_text(
+            yaml.dump(positions_data, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+        prompt = build_chat_system_prompt(project_dir)
+        # 应包含项目信息
+        assert "测试项目" in prompt
+        # 应包含团队成员
+        assert "小红" in prompt
+        assert "大壮" in prompt
+        # 应包含擅长领域
+        assert "Vue3组件" in prompt
+        assert "REST API" in prompt
+        # 不应包含 manager 自己（老王）
+        assert "老王" not in prompt
+        # 应包含 agent 信息
+        assert "agent=hermes" in prompt

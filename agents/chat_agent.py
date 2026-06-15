@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from core.logging import get_logger
 
@@ -168,6 +171,90 @@ def _env_hint(model_key: str) -> str:
         "gemini": "GOOGLE_API_KEY",
     }
     return hints.get(model_key, "对应 API Key")
+
+
+def build_chat_system_prompt(project_dir: Path | None = None) -> str:
+    """构建聊天 Agent 的 system prompt，注入公司组织和项目上下文。
+
+    Args:
+        project_dir: 项目数据目录（.studio/），为 None 时仅返回基础 prompt。
+
+    Returns:
+        包含组织信息的完整 system prompt。
+    """
+    parts = [DEFAULT_SYSTEM_PROMPT]
+
+    if not project_dir:
+        return "\n".join(parts)
+
+    # ── 读取 positions.yaml ──
+    pos_path = project_dir / "positions.yaml"
+    if not pos_path.is_file():
+        # 也尝试 .studio/positions.yaml
+        pos_path = project_dir / ".studio" / "positions.yaml"
+    if not pos_path.is_file():
+        return "\n".join(parts)
+
+    try:
+        data = yaml.safe_load(pos_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return "\n".join(parts)
+
+    project_name = data.get("project") or data.get("name") or ""
+    project_desc = data.get("description") or ""
+    positions = data.get("positions") or []
+
+    if project_name or project_desc:
+        parts.append(f"\n## 项目信息")
+        if project_name:
+            parts.append(f"- 项目名：{project_name}")
+        if project_desc:
+            parts.append(f"- 描述：{project_desc}")
+
+    # ── 构建团队列表 ──
+    manager_ids: set[str] = set()
+    team_lines: list[str] = []
+    for pos in positions:
+        if pos.get("is_manager") and pos.get("parent") is None:
+            manager_ids.add(pos["id"])
+            continue
+        name = pos.get("name") or pos["id"]
+        title = pos.get("title") or ""
+        pid = pos.get("id") or ""
+        agent = pos.get("agent") or ""
+        model = pos.get("model") or ""
+        resume = pos.get("resume") or {}
+        strengths = resume.get("strengths") or []
+        skills = resume.get("skills") or []
+
+        line = f"- {name} ({title}) id={pid}"
+        if agent:
+            line += f" | agent={agent}"
+        if model:
+            line += f" | model={model}"
+        if strengths:
+            line += f" | 擅长: {', '.join(strengths)}"
+        if skills:
+            line += f" | skills={skills}"
+        team_lines.append(line)
+
+    if team_lines:
+        parts.append(f"\n## 你的团队")
+        parts.extend(team_lines)
+
+    # ── 读取 PROJECT.md 画像 ──
+    profile_path = project_dir / "PROJECT.md"
+    if profile_path.is_file():
+        try:
+            from core.project_profile import load_profile, profile_context_for_prompt
+            profile = load_profile(project_dir)
+            if profile and profile.has_substance:
+                parts.append(f"\n## 项目画像")
+                parts.append(profile_context_for_prompt(profile))
+        except Exception:
+            pass
+
+    return "\n".join(parts)
 
 
 def _call_anthropic(
