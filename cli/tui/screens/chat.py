@@ -307,50 +307,45 @@ class ChatScreen(Screen):
 
     @work(thread=True, exclusive=True)
     def _ask_manager_agent(self, text: str) -> None:
-        """后台线程调用 Manager Agent。"""
+        """后台线程调用内置 Agent API。"""
         try:
-            from core.project import get_studio_root
-            root = get_studio_root()
-            from agents.runner import load_position, run_agent_prompt_capture
-            pos = load_position(self._project_dir, self._manager_id)
-            agent_key = pos.get("agent", "claude")
+            from agents.chat_agent import AgentConfig, chat_agent_respond
 
-            prompt = _build_agent_prompt(text, self._recent_history)
+            config = AgentConfig(model=self._model)
 
-            rc, output = run_agent_prompt_capture(
-                root=root,
-                agent_key=agent_key,
-                prompt=prompt,
-                cwd=self._project_dir,
-                timeout_sec=120,
-            )
+            # 构建历史消息
+            history: list[dict[str, str]] = []
+            for h in self._recent_history[-6:]:
+                if h.startswith("CEO:"):
+                    history.append({"role": "user", "content": h[5:]})
+                elif h.startswith("Manager:"):
+                    history.append({"role": "assistant", "content": h[9:]})
 
-            output = _strip_ansi(output)
-            self.app.call_from_thread(self._on_manager_reply, rc, output)
+            reply = chat_agent_respond(config, text, history)
+            self.app.call_from_thread(self._on_manager_reply, reply)
         except Exception as exc:
-            self.app.call_from_thread(self._on_manager_error, _strip_ansi(str(exc)))
+            self.app.call_from_thread(self._on_manager_error, str(exc))
 
-    def _on_manager_reply(self, rc: int, output: str) -> None:
+    def _on_manager_reply(self, reply: str) -> None:
         self._stop_thinking()
-        self._pause_poll = False  # 恢复轮询渲染
+        self._pause_poll = False
         log = self.query_one("#chat-messages", RichLog)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-        if rc == 0 and output.strip():
-            reply = output.strip()
+        if reply.strip():
             if len(reply) > 2000:
                 reply = reply[:1997] + "..."
             self._recent_history.append(f"Manager: {reply}")
 
-            _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 {self._manager_id}[/] [dim]{now}[/] [#4ecdc4]({AVAILABLE_MODELS.get(self._model, self._model)})[/]")
+            model_name = AVAILABLE_MODELS.get(self._model, self._model)
+            _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 {self._manager_id}[/] [dim]{now}[/] [#4ecdc4]({model_name})[/]")
             for line in reply.split("\n"):
                 _w(log, f"[#4ecdc4]│[/]   {line}")
             _w(log, "", scroll_end=self._auto_scroll)
         else:
-            error_msg = output if output else "Agent 无输出"
             _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 {self._manager_id}[/] [dim]{now}[/]\n"
-                     f"[#4ecdc4]│[/]   [red]回复失败: {error_msg}[/]",
+                     f"[#4ecdc4]│[/]   [dim]（无回复内容）[/]",
                scroll_end=self._auto_scroll)
 
     def _on_manager_error(self, error: str) -> None:
@@ -358,7 +353,7 @@ class ChatScreen(Screen):
         self._pause_poll = False
         log = self.query_one("#chat-messages", RichLog)
         _w(log, f"[red]│[/] [red]⚠ 错误[/]\n"
-                 f"[red]│[/]   Agent 调用失败: {error}",
+                 f"[red]│[/]   {error}",
            scroll_end=self._auto_scroll)
 
     # ── 斜杠命令 ──
