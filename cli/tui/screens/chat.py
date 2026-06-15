@@ -48,22 +48,8 @@ AVAILABLE_MODELS = {
     "gemini": "Gemini (Google)",
 }
 
-# 触发编排的关键词（CEO 消息包含这些词才启动编排）
-_ORCH_TRIGGER_KEYWORDS = [
-    "添加", "实现", "做", "开发", "创建", "修复", "改", "写",
-    "增加", "删除", "修改", "构建", "搭建", "新建", "重构",
-    "实现一下", "帮我做", "帮我写", "帮我改", "加一个", "写一个",
-    "帮我实现", "帮我开发", "帮我创建", "帮我修复",
-]
-
-
-def _looks_like_task(text: str) -> bool:
-    """判断 CEO 消息是否像是任务指令（应该触发编排）。"""
-    text_lower = text.lower()
-    for kw in _ORCH_TRIGGER_KEYWORDS:
-        if kw in text_lower:
-            return True
-    return False
+# Agent 回复中的编排触发标记
+_ORCHESTRATE_MARKER = "[ORCHESTRATE]"
 
 
 _THINKING_FRAMES = [
@@ -440,6 +426,12 @@ class ChatScreen(Screen):
         # 已被 Ctrl+C 中断，跳过显示回复
         if self._cancelled:
             return
+
+        # 检查 AI 是否标记了需要编排（从回复中移除标记）
+        should_orchestrate = _ORCHESTRATE_MARKER in reply
+        if should_orchestrate:
+            reply = reply.replace(_ORCHESTRATE_MARKER, "").strip()
+
         log = self.query_one("#chat-messages", RichLog)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -461,8 +453,8 @@ class ChatScreen(Screen):
                      f"[#4ecdc4]│[/]   [dim]（无回复内容）[/]",
                scroll_end=self._auto_scroll)
 
-        # Agent 回复完成后，仅当 CEO 消息是任务指令时才触发编排
-        if self._project_dir and self._manager_id and _looks_like_task(self._last_ceo_text):
+        # 仅当 AI 明确标记需要编排时才触发
+        if should_orchestrate and self._project_dir and self._manager_id:
             self._start_orchestration(self._last_ceo_text)
 
     def _on_manager_error(self, error: str) -> None:

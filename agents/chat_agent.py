@@ -258,7 +258,89 @@ def build_chat_system_prompt(project_dir: Path | None = None) -> str:
         except Exception:
             pass
 
+    # ── 当前任务状态 ──
+    active_tasks = _list_active_tasks(project_dir)
+    if active_tasks:
+        parts.append("\n## 当前任务看板")
+        parts.extend(active_tasks)
+
+    # ── Agent 运行时状态 ──
+    agent_states = _list_agent_states(project_dir)
+    if agent_states:
+        parts.append("\n## 员工实时状态")
+        parts.extend(agent_states)
+
+    # ── 编排触发指令 ──
+    parts.append("\n## 编排触发规则（重要）")
+    parts.append(
+        "当 CEO 要求你**实际执行任务**（如添加功能、修复bug、创建项目、写代码等），"
+        "在你的回复**末尾**加上一行 [ORCHESTRATE]。\n"
+        "以下情况**不要**加 [ORCHESTRATE]：\n"
+        "- 闲聊、问候、询问你能做什么\n"
+        "- 询问项目信息、团队信息、进度\n"
+        "- 解释概念、给出建议、讨论方案\n"
+        "只有 CEO 明确要求你分配任务给下属执行时才标记。"
+    )
+
     return "\n".join(parts)
+
+
+def _list_active_tasks(project_dir: Path) -> list[str]:
+    """读取活跃任务列表，格式化为 prompt 行。"""
+    tasks_dir = project_dir / "tasks" / "active"
+    if not tasks_dir.exists():
+        return []
+    lines: list[str] = []
+    try:
+        for p in sorted(tasks_dir.glob("*.yaml")):
+            if p.name.startswith("."):
+                continue
+            try:
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            tid = data.get("id", p.stem)
+            desc = data.get("description", "")[:60]
+            status = data.get("status", "?")
+            assignee = data.get("assignee", "?")
+            status_icon = {"pending": "⏳", "in_progress": "🔄", "assigned": "📋",
+                           "submitted": "📤", "in_review": "🔍",
+                           "approved": "✅", "archived": "📦", "escalated": "🚩"}.get(status, "❓")
+            lines.append(f"- {status_icon} [{status}] {assignee}: {desc} (id={tid})")
+    except Exception:
+        pass
+    return lines
+
+
+def _list_agent_states(project_dir: Path) -> list[str]:
+    """读取 Agent 运行时状态，格式化为 prompt 行。"""
+    agents_dir = project_dir / "agents"
+    if not agents_dir.exists():
+        return []
+    lines: list[str] = []
+    try:
+        for agent_dir in sorted(agents_dir.iterdir()):
+            if not agent_dir.is_dir() or agent_dir.name.startswith("_"):
+                continue
+            state_file = agent_dir / "runtime" / "state.json"
+            if not state_file.is_file():
+                continue
+            try:
+                import json
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                status = state.get("status", "idle")
+                progress = state.get("progress", 0)
+                message = state.get("message", "")
+                task_id = state.get("task_id", "")
+                if status == "idle":
+                    continue
+                pid = agent_dir.name
+                lines.append(f"- {pid}: [{status}] {progress}% {message} (task={task_id})"[:120])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return lines
 
 
 def _call_anthropic(
