@@ -18,7 +18,7 @@ from cli.tui.widgets.chat_input import (
     COMMANDS,
 )
 from cli.tui.widgets.model_config import ModelConfigBar
-from core.dispatch.dispatcher import get_dispatcher
+from core.dispatch.dispatcher import Dispatcher, get_dispatcher
 from core.ipc.ceo_chat import send_ceo_feedback
 from core.ipc.message_log import MessageLogCollector
 
@@ -117,6 +117,10 @@ class ChatScreen(Screen):
         self._rendered_ids: set[str] = set()
         # Agent 回复期间暂停轮询渲染（防止外部 Agent CLI 往 inbox 写消息导致重复）
         self._pause_poll: bool = False
+        # 编排状态
+        self._orch_task_id: str | None = None
+        self._orch_root: Path | None = None
+        self._orch_disp: Dispatcher | None = None
 
     # ── 布局 ──
 
@@ -166,6 +170,7 @@ class ChatScreen(Screen):
             self._collector = MessageLogCollector(self._project_dir)
             self._load_history()
         self.set_interval(2.0, self._poll_messages)
+        self.set_interval(3.0, self._poll_orchestration)
 
     def _sync_context(self) -> None:
         if self._project_dir:
@@ -311,6 +316,7 @@ class ChatScreen(Screen):
         # 思考 + 异步调用 Agent
         self._start_thinking()
         self._pause_poll = True  # 暂停轮询渲染，防止 CLI Agent 写 inbox 重复
+        self._last_ceo_text = text  # 保存原始消息供编排使用
         self._ask_manager_agent(text)
 
     @work(thread=True, exclusive=True)
@@ -360,6 +366,10 @@ class ChatScreen(Screen):
                      f"[#4ecdc4]│[/]   [dim]（无回复内容）[/]",
                scroll_end=self._auto_scroll)
 
+        # Agent 回复完成后，自动触发编排（如果有项目连接）
+        if self._project_dir and self._manager_id:
+            self._start_orchestration(self._last_ceo_text)
+
     def _on_manager_error(self, error: str) -> None:
         self._stop_thinking()
         self._pause_poll = False
@@ -367,6 +377,75 @@ class ChatScreen(Screen):
         _w(log, f"[red]│[/] [red]⚠ 错误[/]\n"
                  f"[red]│[/]   {error}",
            scroll_end=self._auto_scroll)
+
+    # ── 自动编排 ──
+
+    def _start_orchestration(self, description: str) -> None:
+        """触发自动编排流程。"""
+        if not self._project_dir:
+            return
+        try:
+            from core.project import get_studio_root
+            root = get_studio_root()
+            project_name = getattr(self.app, "project_name", None)
+            if not project_name:
+                return
+            disp = get_dispatcher(root, project_name)
+            task = disp.begin_orchestration(root, description, spawn_terminals=True)
+            self._orch_task_id = task["id"]
+            self._orch_root = root
+            self._orch_disp = disp
+
+            log = self.query_one("#chat-messages", RichLog)
+            _w(log, f"[#f9ca24]│[/] [#f9ca24]🔔 编排启动[/]\n"
+                    f"[#f9ca24]│[/]    任务 {task['id']} 已创建，主管正在拆解…",
+               scroll_end=self._auto_scroll)
+        except Exception as exc:
+            log = self.query_one("#chat-messages", RichLog)
+            _w(log, f"[red]│[/] [red]⚠ 编排启动失败[/]\n"
+                    f"[red]│[/]   {exc}",
+               scroll_end=self._auto_scroll)
+
+    def _poll_orchestration(self) -> None:
+        """轮询编排进度。"""
+        if not self._orch_task_id or not self._orch_root or not self._orch_disp:
+            return
+        try:
+            disp = self._orch_disp
+            root = self._orch_root
+
+            progressed = disp.try_complete_orchestration(
+                root, self._orch_task_id, spawn_terminals=True
+            )
+            if progressed:
+                # 查找根任务状态
+                for t in disp.get_status():
+                    if t.get("id") == self._orch_task_id:
+                        state = t.get("status", "")
+                        log = self.query_one("#chat-messages", RichLog)
+                        if state == "assigned":
+                            _w(log, f"[#4ecdc4]│[/] [#4ecdc4]🤖 编排进度[/]\n"
+                                    f"[#4ecdc4]│[/]    任务已拆解并分配，Worker 终端已弹出",
+                               scroll_end=self._auto_scroll)
+                        elif state in ("in_review",):
+                            _w(log, f"[#f9ca24]│[/] [#f9ca24]🤖 编排进度[/]\n"
+                                    f"[#f9ca24]│[/]    Worker 已交付，主管审查中…",
+                               scroll_end=self._auto_scroll)
+                        elif state in ("approved", "archived"):
+                            _w(log, f"[#3fb950]│[/] [#3fb950]✅ 任务完成[/]\n"
+                                    f"[#3fb950]│[/]    状态: {state}",
+                               scroll_end=self._auto_scroll)
+                            self._orch_task_id = None
+                            self._orch_root = None
+                            self._orch_disp = None
+                        break
+
+            # 持续检查交付和审查
+            disp.poll_deliveries(root)
+            disp.try_run_manager_reviews(root)
+
+        except Exception:
+            pass
 
     # ── 斜杠命令 ──
 
