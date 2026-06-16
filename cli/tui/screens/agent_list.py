@@ -7,7 +7,7 @@ from pathlib import Path
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
 from textual.widget import Widget
@@ -59,21 +59,12 @@ class AgentListScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Container(
-            Vertical(
+            VerticalScroll(
                 Static("[bold]Agent 目录[/]", classes="title-text"),
                 Static("", id="agent-stats", classes="accent"),
                 Static("", id="agent-status", classes="muted"),
-                Horizontal(
-                    Vertical(
-                        ListView(id="agent-list"),
-                        id="agent-list-col",
-                    ),
-                    Vertical(
-                        Static("", id="agent-detail"),
-                        id="agent-detail-col",
-                    ),
-                    id="agent-split",
-                ),
+                ListView(id="agent-list"),
+                Static("", id="agent-detail"),
                 id="agent-box",
                 classes="page-body",
             ),
@@ -181,10 +172,9 @@ class AgentListScreen(Screen):
             if not rlist:
                 return
             self._category_starts.append(len(self._row_map))
-            bar = "─" * 42
             list_view.append(
                 ListItem(
-                    Label(f"[bold yellow on #161b22]{bar}[/]\n[bold yellow on #161b22]  {title}（{count}）[/]", classes="agent-category-header"),
+                    Label(f"[bold yellow on #161b22]  {title}（{count}）[/]", classes="agent-category-header"),
                     disabled=True,
                 )
             )

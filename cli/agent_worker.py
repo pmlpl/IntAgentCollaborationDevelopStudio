@@ -13,9 +13,10 @@ from agents.runner import (
     run_position_task,
     run_position_task_capture,
 )
-from core.config.agent_policy import agent_allowed, agent_enabled
+from core.config.agent_policy import agent_allowed, agent_can_execute, agent_enabled
 from core.dispatch.decompose import (
     MARKER,
+    _resolve_decompose_fallback,
     generate_mock_subtasks,
     parse_manager_output,
     save_decompose_result,
@@ -38,6 +39,40 @@ from core.runtime.state import AgentRuntimeState, write_state
 logger = get_logger(__name__)
 
 
+def _ensure_utf8_stdout() -> None:
+    """Force stdout/stderr to UTF-8, avoiding GBK crashes on Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() not in ("utf-8", "utf8"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def _collect_ceo_feedback(project_dir: Path, manager_id: str) -> str:
+    """从主管 inbox 中读取 CEO 反馈消息，格式化为 prompt 文本段。"""
+    from datetime import datetime
+
+    inbox_dir = project_dir / "agents" / manager_id / "inbox"
+    bus = MessageBus(inbox_dir)
+    feedback_msgs = [
+        m for m in bus.peek()
+        if m.type == "ceo_feedback" and m.sender == "__ceo__"
+    ]
+    if not feedback_msgs:
+        return ""
+    lines = ["## CEO Feedback (from the CEO during orchestration)"]
+    for m in feedback_msgs:
+        text = (m.payload or {}).get("text", "")
+        try:
+            t = datetime.fromisoformat(m.created_at.replace("Z", "+00:00"))
+            ts = t.strftime("%H:%M")
+        except (ValueError, AttributeError):
+            ts = "??:??"
+        lines.append(f'- [{ts}] "{text}"')
+    return "\n".join(lines)
+
+
 def _build_decompose_prompt(root: Path, project_dir: Path, manager_id: str, description: str) -> str:
     import yaml
 
@@ -55,38 +90,29 @@ def _build_decompose_prompt(root: Path, project_dir: Path, manager_id: str, desc
             f"擅长={strengths} {extra}".strip()
         )
     team = "\n".join(team_lines)
+    ceo_feedback = _collect_ceo_feedback(project_dir, manager_id)
+    feedback_section = f"\n{ceo_feedback}\n\n" if ceo_feedback else "\n"
     return (
-        f"你是技术主管。CEO 任务：{description}\n\n"
-        f"团队成员（含已注册 skills/MCP）：\n{team}\n\n"
-        f"拆分任务时，在子任务 description 里点名各成员应使用的 skills。\n\n"
-        f"## 并行优先原则（重要）\n"
-        f"- 能同时进行的任务必须同时派发，waits_on 留空 []\n"
-        f"- 只有真正依赖前序产出（代码/文件/决策）时才设置 waits_on\n"
-        f"- 若团队有 N 个成员，至少派发 N 个子任务同时开工\n\n"
-        f"## 输出要求（必须严格遵守）\n"
-        f"1. 先用中文简要列出子任务分工（3-8 行即可）\n"
-        f"2. 然后单独一行输出标记（必须完全一致）：{MARKER}\n"
-        f"3. 标记下一行起只输出 JSON 数组，不要 markdown 代码块\n"
-        f"4. assignee 必须是上方团队成员的 id 字段\n"
-        f"5. 每项字段：assignee, description, waits_on（无依赖则 []）\n"
-        f"6. 示例（仅格式参考，assignee 请换成真实 id）：\n"
-        f'[{{"assignee":"xiaohong","description":"...","waits_on":[]}}]'
+        f"You are the Tech Lead. CEO task: {description}\n\n"
+        f"Team members (with registered skills/MCP):\n{team}\n"
+        f"{feedback_section}"
+        f"## Language Policy (IMPORTANT)\n"
+        f"- ALL communication with team members MUST be in English\n"
+        f"- Sub-task descriptions MUST be written in English\n"
+        f"- When reporting final results to CEO, summarize in Chinese (中文)\n\n"
+        f"## Parallel-first Principle (IMPORTANT)\n"
+        f"- Tasks that can run concurrently MUST be dispatched together, waits_on set to []\n"
+        f"- Only set waits_on when the task truly depends on prior output (code/files/decisions)\n"
+        f"- If the team has N members, dispatch at least N sub-tasks simultaneously\n\n"
+        f"## Output Requirements (MUST follow strictly)\n"
+        f"1. First briefly list sub-task assignments in English (3-8 lines)\n"
+        f"2. Then output the marker on its own line (must match exactly): {MARKER}\n"
+        f"3. Starting from the line after the marker, output ONLY a JSON array (no markdown code blocks)\n"
+        f"4. assignee must be one of the team member IDs listed above\n"
+        f"5. Each item fields: assignee, description, waits_on (empty [] if no dependencies)\n"
+        f"6. Example (for format reference only, use real assignee IDs):\n"
+        f'[{{"assignee":"xiaohong","description":"Implement the frontend UI with Vue3 components...","waits_on":[]}}]'
     )
-
-
-def _decompose_fallback_mode(root: Path) -> str:
-    """解析失败时的策略：mock 自动拆解 | fail 直接报错。"""
-    if os.environ.get("STUDIO_MOCK_FALLBACK", "").lower() in ("1", "true", "yes"):
-        return "mock"
-    path = root / "config" / "platform.yaml"
-    if not path.is_file():
-        return "mock"
-    import yaml
-
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    orch = data.get("orchestration") or {}
-    mode = str(orch.get("decompose_fallback", "mock")).strip().lower()
-    return mode if mode in ("mock", "fail") else "mock"
 
 
 def _finish_with_mock(
@@ -111,22 +137,8 @@ def _finish_with_mock(
     return 0
 
 
-def _agent_can_execute(root: Path, agent_id: str) -> tuple[bool, str]:
-    """检查 Agent 是否可以真正执行任务。
-
-    返回 (can_execute, reason)。
-    can_execute=False 时 reason 说明原因。
-    """
-    if not agent_available(root, agent_id):
-        return False, f"CLI 命令不在 PATH 中"
-    if not agent_enabled(root, agent_id):
-        return False, "已被用户禁用"
-    if not agent_allowed(root, agent_id):
-        return False, "当前 BYOK 策略不允许"
-    return True, "ok"
-
-
 def cmd_decompose(args: argparse.Namespace) -> int:
+    _ensure_utf8_stdout()
     root = Path(args.root).resolve()
     project_dir = load_project(root, args.project)
     manager_id = args.position
@@ -147,7 +159,7 @@ def cmd_decompose(args: argparse.Namespace) -> int:
     force_mock = os.environ.get("STUDIO_MOCK", "").lower() in ("1", "true", "yes") or args.mock
     pos = load_position(project_dir, manager_id)
     agent_id = pos["agent"]
-    can_run, reason = _agent_can_execute(root, agent_id)
+    can_run, reason = agent_can_execute(root, agent_id)
 
     if force_mock:
         return _finish_with_mock(
@@ -166,7 +178,7 @@ def cmd_decompose(args: argparse.Namespace) -> int:
             root, project_dir, manager_id, prompt, mock=False
         )
     except FileNotFoundError as exc:
-        if _decompose_fallback_mode(root) == "mock":
+        if _resolve_decompose_fallback(project_dir) == "mock":
             subtasks = generate_mock_subtasks(project_dir, description)
             save_decompose_result(project_dir, manager_id, subtasks)
             write_state(
@@ -190,7 +202,7 @@ def cmd_decompose(args: argparse.Namespace) -> int:
         raw = parse_manager_output(output)
         subtasks = validate_subtasks(raw, project_dir, manager_id)
     except (ValueError, json.JSONDecodeError) as exc:
-        fallback = _decompose_fallback_mode(root)
+        fallback = _resolve_decompose_fallback(project_dir)
         if fallback == "mock":
             return _finish_with_mock(
                 project_dir,
@@ -255,7 +267,7 @@ def cmd_work(args: argparse.Namespace) -> int:
     return rc
 
 
-def _build_review_prompt(root: Path, project_dir: Path, task_id: str) -> str:
+def _build_review_prompt(root: Path, project_dir: Path, task_id: str, manager_id: str = "") -> str:
     """构建主管验收 Worker 交付的提示词。"""
     import yaml
 
@@ -274,23 +286,32 @@ def _build_review_prompt(root: Path, project_dir: Path, task_id: str) -> str:
     # 防线三：技能合规检查清单
     compliance_text = compliance_for_task(root, project_dir, task_id)
 
+    # CEO 反馈（如果有）
+    ceo_feedback = _collect_ceo_feedback(project_dir, manager_id) if manager_id else ""
+    feedback_section = f"\n{ceo_feedback}\n" if ceo_feedback else ""
+
     return (
-        f"你是技术主管，正在验收团队成员 {assignee} 的交付。\n\n"
-        f"任务 ID：{task_id}\n"
-        f"交付摘要：{summary}\n"
-        f"涉及文件：{', '.join(files) if files else '（未列出）'}\n"
-        f"自动验证命令：{run_cmd}\n"
-        f"退出码：{exit_code}\n"
-        f"运行输出：\n{run_output or '（无）'}\n\n"
-        f"## 技能合规检查清单（审查时必须逐项确认）\n"
+        f"You are the Tech Lead reviewing a delivery from team member {assignee}.\n\n"
+        f"Task ID: {task_id}\n"
+        f"Delivery Summary: {summary}\n"
+        f"{feedback_section}\n"
+        f"Files: {', '.join(files) if files else '(none listed)'}\n"
+        f"Auto-verification command: {run_cmd}\n"
+        f"Exit code: {exit_code}\n"
+        f"Run output:\n{run_output or '(none)'}\n\n"
+        f"## Skills Compliance Checklist (review each item)\n"
         f"{compliance_text}\n\n"
-        f"请根据运行结果、任务目标与合规清单判断：通过 / 打回修改 / 上报 CEO。\n\n"
-        f"## 输出要求（必须严格遵守）\n"
-        f"1. 先用中文简要说明审查结论（2-5 行）\n"
-        f"2. 然后单独一行输出标记（必须完全一致）：{REVIEW_MARKER}\n"
-        f"3. 标记下一行起只输出 JSON 对象，不要 markdown 代码块\n"
-        f'4. 字段：verdict（approved|rejected|escalated）、comment（说明）\n'
-        f'5. 示例：{{"verdict":"approved","comment":"测试通过，可合并"}}'
+        f"## Language Policy\n"
+        f"- If you need to send feedback to the worker, write in English\n"
+        f"- The final verdict comment for CEO MUST be in Chinese (中文)\n\n"
+        f"Based on the run results, task objectives, and compliance checklist, "
+        f"decide: approved / rejected / escalated.\n\n"
+        f"## Output Requirements (MUST follow strictly)\n"
+        f"1. First briefly explain your review conclusion in English (2-5 lines)\n"
+        f"2. Then output the marker on its own line (must match exactly): {REVIEW_MARKER}\n"
+        f"3. Starting from the line after the marker, output ONLY a JSON object (no markdown code blocks)\n"
+        f"4. Fields: verdict (approved|rejected|escalated), comment (in Chinese 中文, for CEO)\n"
+        f'5. Example: {{"verdict":"approved","comment":"功能完整，测试通过，代码质量良好，建议合并"}}'
     )
 
 
@@ -308,6 +329,7 @@ def _rule_based_review(record: dict) -> dict[str, str]:
 
 def cmd_review(args: argparse.Namespace) -> int:
     """主管审查 Worker 交付。"""
+    _ensure_utf8_stdout()
     root = Path(args.root).resolve()
     project_dir = load_project(root, args.project)
     manager_id = args.position
@@ -349,7 +371,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(f"{REVIEW_MARKER}\n{json.dumps(verdict_data, ensure_ascii=False)}")
         return 0
 
-    prompt = _build_review_prompt(root, project_dir, task_id)
+    prompt = _build_review_prompt(root, project_dir, task_id, manager_id=manager_id)
     try:
         rc, output = run_position_task_capture(
             root, project_dir, manager_id, prompt, mock=False
@@ -432,10 +454,8 @@ def _try_work_from_inbox(
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
-    """Worker 持续运行模式：执行初始任务后轮询 inbox，复用同一进程/终端。
-
-    此模式避免每次任务都 spawn 新终端，大幅提升 Agent CLI 缓存命中率。
-    """
+    """Worker 持续运行模式：执行初始任务后轮询 inbox，复用同一进程/终端。"""
+    _ensure_utf8_stdout()
     import time as _time
 
     root = Path(args.root).resolve()

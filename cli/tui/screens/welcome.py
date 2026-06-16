@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from cli.tui.screens.onboarding import OnboardingScreen
 from textual.app import ComposeResult
-from textual.containers import Container, Vertical
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
@@ -21,7 +21,7 @@ class WelcomeScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Container(
-            Vertical(
+            VerticalScroll(
                 Static(
                     "\n\n  IntAgent Studio\n  多 Agent 协作开发管理平台\n\n"
                     "  你是 CEO。为每个项目选一个文件夹，\n"

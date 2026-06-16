@@ -68,3 +68,48 @@ class MessageBus:
 
     def peek_count(self) -> int:
         return len(list(self.inbox_dir.glob("*.json")))
+
+    def peek(self) -> list[Message]:
+        """读取 inbox 中未消费的消息（不移动文件）。"""
+        messages: list[Message] = []
+        for path in sorted(self.inbox_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                messages.append(self._from_json_dict(data))
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return messages
+
+    def scan_processed(self, limit: int = 50) -> list[Message]:
+        """读取 processed/ 中最近 N 条历史消息，按修改时间排序。"""
+        proc_dir = self.inbox_dir / "processed"
+        if not proc_dir.exists():
+            return []
+        files = sorted(
+            proc_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:limit]
+        messages: list[Message] = []
+        for path in files:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                messages.append(self._from_json_dict(data))
+            except (json.JSONDecodeError, KeyError):
+                continue
+        messages.reverse()  # 恢复时间正序
+        return messages
+
+    def scan_all(self, limit: int = 50) -> list[Message]:
+        """合并 peek() + scan_processed()，按 created_at 排序返回最近 N 条。"""
+        pending = self.peek()
+        history = self.scan_processed(limit)
+        # 去重（pending 消息可能同时出现在两个来源）
+        seen: set[str] = set()
+        merged: list[Message] = []
+        for msg in pending + history:
+            if msg.id not in seen:
+                seen.add(msg.id)
+                merged.append(msg)
+        merged.sort(key=lambda m: m.created_at)
+        return merged[-limit:]

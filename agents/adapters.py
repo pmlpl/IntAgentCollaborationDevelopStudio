@@ -1,11 +1,7 @@
 # agents/adapters.py — 各 Agent CLI 适配器（多态替换单一 ClaudeCodeAdapter）
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 from agents.base import AgentRunContext, BaseAgentAdapter
-from agents.execute import agent_subprocess_env, prepare_subprocess_argv
 
 
 class ClaudeCodeAdapter(BaseAgentAdapter):
@@ -34,12 +30,6 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         return [self.command, *self.flags_interactive]
 
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
-
 
 class OpenCodeAdapter(BaseAgentAdapter):
     """OpenCode CLI 适配器。
@@ -62,20 +52,14 @@ class OpenCodeAdapter(BaseAgentAdapter):
         )
 
     def build_command(self, ctx: AgentRunContext) -> list[str]:
-        """headless 模式：opencode run --format json --yes <task>"""
-        cmd = [self.command, *self.flags_headless, "--yes", ctx.task]
+        """headless 模式：opencode run --format json <task>"""
+        cmd = [self.command, *self.flags_headless, ctx.task]
         _ = ctx.skills, ctx.mcp_servers
         return cmd
 
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         """交互式：opencode run -i <task_text>（由 launcher 调用时构建完整 argv）"""
         return [self.command, *self.flags_interactive]
-
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
 
 
 class HermesAdapter(BaseAgentAdapter):
@@ -100,16 +84,11 @@ class HermesAdapter(BaseAgentAdapter):
         )
 
     def build_command(self, ctx: AgentRunContext) -> list[str]:
-        return [self.command, *self.flags, "--yes", ctx.task]
+        # Hermes does NOT support --yes; use chat -q for headless quick mode
+        return [self.command, *self.flags, ctx.task]
 
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         return [self.command, *self.flags_interactive]
-
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
 
 
 class AiderAdapter(BaseAgentAdapter):
@@ -137,12 +116,6 @@ class AiderAdapter(BaseAgentAdapter):
 
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         return [self.command, *self.flags_interactive]
-
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
 
 
 class GooseAdapter(BaseAgentAdapter):
@@ -172,12 +145,6 @@ class GooseAdapter(BaseAgentAdapter):
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         return [self.command, *self.flags_interactive]
 
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
-
 
 class CodexAdapter(BaseAgentAdapter):
     """OpenAI Codex CLI 适配器。
@@ -204,12 +171,6 @@ class CodexAdapter(BaseAgentAdapter):
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         return [self.command, *self.flags_interactive]
 
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
-
 
 class GeminiCLIAdapter(BaseAgentAdapter):
     """Gemini CLI 适配器。
@@ -235,12 +196,6 @@ class GeminiCLIAdapter(BaseAgentAdapter):
 
     def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
         return [self.command, *self.flags_interactive]
-
-    def run(self, ctx: AgentRunContext) -> int:
-        cmd = prepare_subprocess_argv(self.build_command(ctx))
-        env = agent_subprocess_env(ctx.env or None)
-        result = subprocess.run(cmd, cwd=ctx.worktree, env=env)
-        return result.returncode
 
 
 # ── 适配器注册表：command → Adapter 类 ──

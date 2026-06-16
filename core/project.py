@@ -627,10 +627,11 @@ def delete_project(
     project_id: str,
     *,
     remove_folder: bool = True,
-) -> None:
-    """从 registry 移除项目，并删除 registry 中登记的项目文件夹。
+) -> tuple[bool, str | None]:
+    """从 registry 移除项目，并删除登记的项目文件夹。
 
-    顺序：先校验并删文件夹，再从 registry 移除，避免删文件夹失败时列表仍显示。
+    返回 (folder_deleted, warning_message)。
+    文件夹删除失败时仍会清理 registry，不会留下幽灵记录。
     """
     entry = get_registry_entry(root, project_id)
     project_root: Path | None = None
@@ -641,14 +642,27 @@ def delete_project(
         if legacy.exists():
             project_root = legacy
 
+    folder_deleted = False
+    warning: str | None = None
+
     if remove_folder and project_root:
         studio_root = get_studio_root().resolve()
-        if project_root == studio_root:
-            raise ValueError("不能删除 Studio 平台根目录")
-        _assert_safe_delete_path(project_root, studio_root)
-        _backup_before_delete(project_root, project_id, studio_root)
-        if project_root.exists():
-            shutil.rmtree(project_root)
+        if not project_root.exists():
+            # 文件夹已被 OS 清理（如临时目录），直接清 registry
+            folder_deleted = True
+        else:
+            try:
+                if project_root == studio_root:
+                    raise ValueError("不能删除 Studio 平台根目录")
+                _assert_safe_delete_path(project_root, studio_root)
+                _backup_before_delete(project_root, project_id, studio_root)
+                shutil.rmtree(project_root)
+                folder_deleted = True
+            except ValueError as exc:
+                # 安全检查不通过：不清除 registry，让用户手动处理
+                raise
+            except OSError as exc:
+                warning = f"文件夹删除失败 ({exc})，已从列表移除，请手动删除: {project_root}"
 
     data = load_registry(root)
     projects = [p for p in data.get("projects", []) if p.get("id") != project_id]
@@ -658,6 +672,8 @@ def delete_project(
     current_file = current_project_file(root)
     if current_file.exists() and current_file.read_text(encoding="utf-8").strip() == project_id:
         current_file.unlink(missing_ok=True)
+
+    return folder_deleted, warning
 
 
 _SAFE_DELETE_BLOCKED: set[Path] | None = None
@@ -682,15 +698,48 @@ def _get_safe_delete_blocked() -> set[Path]:
 
 
 def _assert_safe_delete_path(target: Path, studio_root: Path) -> None:
-    """校验目标路径可安全删除。允许 studio 在 Desktop 下时删除 projects/ 子目录。"""
+    """校验目标路径可安全删除。
+
+    策略（按优先级）：
+    1. 绝对禁止：系统关键路径（C:\\、Windows、Home 等）
+    2. 绝对禁止：Studio 平台根目录
+    3. 放行：含 .studio/positions.yaml 或 positions.yaml 的 Studio 项目目录
+    4. 放行：位于 projects/ 子目录下的路径（兼容旧版无标记的目录）
+    5. 拒绝：其余路径（含临时目录等非项目路径）
+    """
     target = target.resolve()
     target_str = str(target).lower()
 
+    # pytest 临时目录：放行
     if "pytest" in target_str and "tmp" in target_str:
         return
     if "temp" in target_str and "pytest" in target_str:
         return
 
+    # 1. 绝对禁止的系统路径
+    for blocked in _get_safe_delete_blocked():
+        try:
+            target.relative_to(blocked)
+            # Home 目录本身禁止，但子目录允许（只要它是 Studio 项目）
+            if target == blocked:
+                raise ValueError(f"拒绝删除系统关键路径: {target}")
+            break
+        except ValueError:
+            continue
+    else:
+        pass  # 不在任何 blocked 目录下
+
+    # 2. 禁止删除 Studio 平台根
+    if target == studio_root:
+        raise ValueError(f"拒绝删除 Studio 平台根目录: {target}")
+
+    # 3. Studio 项目标记：有 .studio/positions.yaml 或 position.yaml 即放行
+    if (target / DATA_DIR_NAME / "positions.yaml").exists():
+        return
+    if (target / "positions.yaml").exists():
+        return
+
+    # 4. 兼容：位于 projects/ 子目录下
     projects_dir = (studio_root / "projects").resolve()
     try:
         target.relative_to(projects_dir)
@@ -698,9 +747,10 @@ def _assert_safe_delete_path(target: Path, studio_root: Path) -> None:
     except ValueError:
         pass
 
+    # 5. 拒绝：不能确认是 Studio 项目
     raise ValueError(
-        f"拒绝删除：路径 {target} 不在平台 projects/ 目录下。"
-        f"请手动删除文件夹，或在项目中心仅清理 registry。"
+        f"拒绝删除：路径 {target} 不含 .studio/positions.yaml 标记，"
+        f"无法确认为 Studio 项目。请手动检查并删除。"
     )
 
 

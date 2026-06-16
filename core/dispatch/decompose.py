@@ -142,7 +142,7 @@ def _resolve_decompose_fallback(project_dir: Path) -> str:
 
     orch = data.get("orchestration") or {}
     fallback = str(orch.get("decompose_fallback", "mock")).strip().lower()
-    if fallback in ("mock", "raise", "error"):
+    if fallback in ("mock", "raise", "error", "fail"):
         return fallback
     return "mock"
 

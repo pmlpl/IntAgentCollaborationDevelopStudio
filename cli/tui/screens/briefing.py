@@ -40,7 +40,7 @@ class TaskDispatchScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Container(
-            Vertical(
+            VerticalScroll(
                 Static("[bold]下达任务（CEO）[/]", classes="title-text"),
                 Static("", id="dispatch-step-indicator", classes="muted"),
                 Static("", id="dispatch-overview", classes="muted"),

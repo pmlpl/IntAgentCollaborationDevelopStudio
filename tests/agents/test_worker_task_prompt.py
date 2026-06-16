@@ -23,9 +23,9 @@ def test_format_worker_task_prompt_includes_ceo_brief(tmp_path: Path):
         task_id="task-1-xiaohong",
         role="小红 (前端)",
     )
-    assert "CEO 已确认总目标" in text
+    assert "CEO Confirmed Goal" in text
     assert "登录页" in text
-    assert "本子任务" in text
+    assert "Your Sub-task" in text
     assert "实现前端登录表单" in text
 
     wt = tmp_path / "wt"

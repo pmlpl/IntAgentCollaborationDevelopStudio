@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install in dev mode (includes pytest)
 pip install -e ".[dev]"
 
-# Run all tests
+# Run all tests (164 tests, 36 test modules)
 pytest
 
 # Run a single test file
@@ -29,64 +29,91 @@ studio
 # Run CLI commands directly (skip TUI)
 studio init --name test-project --description "Test"
 studio task "Add search" --orchestrate --mock
+studio agent status                   # Agent health overview
+studio agent check --no-smoke         # Quick agent availability check
+studio expand business "description"  # Expand org with new business line
 studio status
 studio project list
 ```
 
-There is no lint/formatter configured yet. Python target is 3.11+.
+No lint/formatter configured. Python target is 3.11+.
 
 ## Architecture Overview
 
-This is a **CEO-mode local multi-agent orchestration platform**. The user gives orders; the system manages a tree-structured "company" of external CLI coding agents (Claude Code, Hermes, OpenCode) working in isolated Git worktrees.
+This is a **CEO-mode local multi-agent orchestration platform**. The user gives orders; the system manages a tree-structured "company" of external CLI coding agents working in isolated Git worktrees.
 
 ### Layer Stack
 
 ```
-┌─ cli/studio.py ── CLI (argparse) + TUI (Textual) entry point
-├─ cli/tui/app.py ── Textual App with screen stack (welcome → hub → onboarding → briefing → dashboard → review)
-├─ core/dispatch/ ── Task lifecycle: create → decompose (manager) → assign (workers) → review → merge
-├─ core/org/      ── Tree-structured org chart (OrgTree) with RBAC permission inheritance
-├─ core/workspace/ ── Git worktree isolation (one per worker task)
-├─ agents/         ── Subprocess adapter layer for external Agent CLIs
-├─ core/platform/  ── Shared middleware: skills registry, MCP registry, file-backed memory store
-├─ core/research/  ── Web search + Agent synthesis → project profile + org template selection
-├─ core/rbac/      ── Skill/MCP/memory permission resolution along org tree
-├─ supervisor/     ── Go gRPC daemon (optional; Python PortRegistry/ProcessRegistry fallback)
-└─ config/         ── YAML: agents.yaml, models.yaml, platform.yaml, templates/
+┌─ cli/studio.py ──── CLI (argparse) + TUI (Textual) entry point
+├─ cli/tui/ ───────── 11 screens + 5 widgets (welcome→hub→onboarding→dashboard→review→expand…)
+├─ cli/agent_worker.py ── Agent worker modes: decompose / work / review / watch (PID-persistent)
+├─ core/dispatch/ ──── Task lifecycle + 6-stage orchestration progress tracker
+├─ core/org/ ───────── Tree-structured org chart (OrgTree) with RBAC permission inheritance
+├─ core/workspace/ ─── Git worktree isolation (one per worker task)
+├─ core/config/ ────── Agent policy, catalog, enable/disable toggle (30s cache)
+├─ core/terminal/ ──── Agent launcher, install launcher, subprocess spawner
+├─ agents/ ─────────── Adapter classes per CLI + health checks + output normalizers
+├─ core/platform/ ──── Skills registry, MCP client, vector/file/SQLite memory store
+├─ core/research/ ──── Web search + Agent synthesis → project profile + org template
+├─ core/rbac/ ──────── Skill/MCP/memory permission resolution along org tree
+├─ core/supervisor/ ── Python PortRegistry/ProcessRegistry (Go gRPC daemon optional)
+├─ platform/mcp/ ───── MCP stdio gateway: JSON-RPC connection pool + process lifecycle
+├─ platform/memory/ ── Persistent memory store (file / SQLite FTS5 / ChromaDB vector)
+├─ supervisor/ ─────── Go gRPC daemon (optional; Python fallback in core/supervisor/)
+└─ config/ ─────────── YAML: agents.yaml, platform.yaml, agents_catalog.yaml, templates/
 ```
 
-### Agent Adapter Reality
+### Agent Adapters
 
-Despite `agents.yaml` listing 7 agents (claude-code, hermes, opencode, aider, goose, codex, gemini-cli), there is **only one adapter class**: `ClaudeCodeAdapter` in `agents/claude_code.py`. The `get_adapter()` function in `agents/registry.py` always returns `ClaudeCodeAdapter` regardless of which agent is configured. The adapter distinguishes agents only by `command` and `flags` from YAML config. All agents are invoked via `subprocess.run()`.
+Each agent CLI has a dedicated adapter class in [agents/adapters.py](agents/adapters.py):
+
+| Adapter | Command | Headless flags | Interactive flags |
+|---------|---------|---------------|-------------------|
+| `ClaudeCodeAdapter` | `claude` | `-p --dangerously-skip-permissions` | `--dangerously-skip-permissions` |
+| `OpenCodeAdapter` | `opencode` | `run --format json` | `--model deepseek/deepseek-chat` |
+| `HermesAdapter` | `hermes` | `chat -q` | `chat --tui` |
+| `AiderAdapter` | `aider` | `--message --yes` | `--model deepseek/deepseek-chat --yes` |
+| `GooseAdapter` | `goose` | `run --yes` | `session --yes` |
+| `CodexAdapter` | `codex` | `exec` | (none) |
+| `GeminiCLIAdapter` | `gemini` | `-p` | (none) |
+
+All adapters implement `BaseAgentAdapter` with `build_command()` (headless capture) and `build_interactive_command()` (TUI terminal). The registry maps `command` → adapter class; unknown commands fall back to `ClaudeCodeAdapter`.
 
 Key execution paths:
-- **Headless (print mode)**: `agents/runner.py` → `build_command()` → `subprocess.run(cmd, capture_output=True)` — used for manager decomposition and research
-- **Interactive (TUI mode)**: `core/terminal/agent_launcher.py` → `build_interactive_command()` → `spawn_agent_terminal()` — opens a new Windows Terminal tab
-- **Windows shim resolution**: `agents/execute.py` `prepare_subprocess_argv()` handles `.cmd`/`.bat`/`.ps1` npm shims, resolving them to native `.exe` or `node` scripts
+- **Headless capture**: `agents/runner.py` → `build_command()` → `subprocess.run(cmd, capture_output=True)` — used for manager decomposition and research. Has timeout, retry, and truncated-JSON repair.
+- **Interactive (TUI)**: `core/terminal/agent_launcher.py` → `build_interactive_command()` → `spawn_agent_terminal()` — opens a new Windows Terminal tab.
+- **Worker watch mode**: `cli/agent_worker.py cmd_watch` — inbox polling (5s), PID file registration, shared worktree reuse. Supports graceful shutdown.
+- **Windows shim resolution**: `agents/execute.py` `prepare_subprocess_argv()` handles `.cmd`/`.bat`/`.ps1` npm shims → native `.exe` or `node` scripts.
 
 ### Task Lifecycle (File-Driven State Machine)
 
 ```
 pending → assigned → in_progress → submitted → in_review → approved/archived
-                                                          → rejected → in_progress
-                                                          → escalated (CEO decision)
+                                                         → rejected → in_progress
+                                                         → escalated (CEO decision)
             blocked (waits_on dependencies not met)
 ```
 
-State is stored as YAML files in `tasks/active/{task_id}.yaml`. Inter-agent messages use JSON files in `agents/{id}/inbox/`. The `MessageBus` drains messages by renaming `.json` → `processed/`.
+State stored as YAML in `tasks/active/{task_id}.yaml`. Inter-agent messages via JSON files in `agents/{id}/inbox/`; `MessageBus` drains by renaming `.json` → `processed/`.
 
-### Orchestration Flow
+### Orchestration Flow (v0.2.0 — full loop closed)
 
-1. `studio task "..." --orchestrate` → `Dispatcher.create_task()` writes root task YAML + inbox message to manager
-2. Manager agent (subprocess) decomposes task, outputs JSON after `---STUDIO_SUBTASKS_JSON---` marker
-3. `parse_manager_output()` in `core/dispatch/decompose.py` extracts subtasks with assignee/waits_on
-4. `apply_subtasks()` writes child task YAMLs, spawns worker terminals via `spawn_worker_agent_terminal()`
-5. Workers write `.studio/DELIVER.json` when done; `poll_worker_deliveries()` detects and triggers manager review
-6. Manager reviews (another subprocess), outputs verdict JSON after `---STUDIO_REVIEW_JSON---`
+1. `studio task "..." --orchestrate` → `Dispatcher.create_task()` writes root task + inbox message to manager
+2. Manager decomposes; output parsed from `---STUDIO_SUBTASKS_JSON---` marker with retry + truncated-JSON repair
+3. `apply_subtasks()` writes child task YAMLs, spawns worker terminals via `spawn_worker_agent_terminal()`
+4. Workers write `.studio/DELIVER.json` when done; polling detects and triggers manager review
+5. Manager reviews and outputs verdict JSON after `---STUDIO_REVIEW_JSON---`
+6. `compute_orchestration_progress()` tracks 6 stages (create→decompose→spawn→deliver→review→archive) with dynamic percentages
 
-### Mock Mode
+### Key Systems (all completed in v0.2.0)
 
-`--mock` flag skips real Agent calls. `generate_mock_subtasks()` in `decompose.py` creates default subtasks from `positions.yaml`. Essential for testing the orchestration pipeline without real Agent CLIs installed.
+- **ChromaDB vector memory** (`core/platform/vector_memory.py`): Hybrid search (vector + keyword RRF fusion), ONNX embeddings, graceful degradation to SQLite FTS5
+- **MCP stdio gateway** (`platform/mcp/gateway/`): JSON-RPC 2.0 connection pool, subprocess lifecycle management, tool call timeout (60s), health-check pings
+- **Agent health checks** (`agents/health.py`): 3-stage pipeline (PATH→--version→smoke test) with timeout detection and API-key-error classification
+- **Agent session persistence** (`cli/agent_worker.py cmd_watch`): Inbox polling + PID registration + shared worktree reuse across sessions
+- **Org expansion** (`core/org/expand_ops.py`): Research-driven business line expansion, role insertion, manager layer insertion
+- **Config policy** (`core/config/agent_policy.py`): BYOK enforcement, enable/disable toggles, 30s caching, auto-detect installed agents
 
 ## Critical Safety Notes
 
@@ -107,8 +134,5 @@ State is stored as YAML files in `tasks/active/{task_id}.yaml`. Inter-agent mess
 - **Three-line defense for skills**: (1) Auto-load at spawn, (2) Manager mentions skills in task descriptions, (3) Reviewer checks compliance
 - **BYOK policy**: Default `platform.yaml` sets `agents.policy: byok_only`, restricting to agents that work with third-party API keys
 - **Go Supervisor is optional**: Python `PortRegistry` + `ProcessRegistry` in `core/supervisor/registry.py` provide full fallback
-
-## Project Completion Status
-
-This is **v0.1.0 — early prototype**. What works: project init, task creation, mock orchestration loop, org tree CRUD, TUI navigation, research/web-search pipeline. What's incomplete: real Agent-driven orchestration (depends on Agent output parsing reliability), expand/business-line features (hardcoded to mock research), memory store (file-backed, no vector search yet), MCP gateway (registry exists but gateway is empty config).
-
+- **Decompose resilience**: Retry-on-parse-failure with error feedback to manager, truncated-JSON repair, markdown fence stripping. Fallback controlled by `platform.yaml` (`decompose_fallback: mock|raise`)
+- **Adaptive timeouts**: Per-task-type timeouts from `platform.yaml` (`orchestration.timeout_decompose|research|review|agent`), defaults: decompose 300s, research 180s, others 120s

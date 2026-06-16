@@ -41,7 +41,7 @@ class ExpandScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Container(
-            Vertical(
+            VerticalScroll(
                 Static("[bold]扩建公司[/]", classes="title-text"),
                 Static("", id="expand-step-indicator", classes="muted"),
                 Static("", id="expand-status", classes="muted"),

@@ -26,7 +26,8 @@ from core.dispatch.delivery import (
     refresh_delivery_verification,
 )
 from core.ipc.message_bus import Message, MessageBus
-from core.config.agent_policy import agent_allowed, agent_enabled
+from core.config.agent_policy import agent_allowed, agent_can_execute, agent_enabled
+from core.config.platform_settings import get_orchestration_settings
 from core.logging import get_logger
 from core.org.tree_ops import OrgTree
 from core.project import get_project_root, load_project
@@ -43,16 +44,6 @@ def _slugify(text: str) -> str:
     slug = re.sub(r"[^\w\s-]", "", text.lower())
     slug = re.sub(r"[\s_]+", "-", slug).strip("-")
     return slug[:40] or "task"
-
-
-def _orchestration_settings(root: Path) -> dict[str, Any]:
-    """读取 platform.yaml 中的 orchestration 段。"""
-    path = root / "config" / "platform.yaml"
-    if not path.is_file():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    orch = data.get("orchestration")
-    return orch if isinstance(orch, dict) else {}
 
 
 def _spawn_decompose_background(module_args: list[str], *, cwd: Path, env: dict[str, str]) -> None:
@@ -163,16 +154,12 @@ class Dispatcher:
         # 检测主管 Agent 是否可执行
         pos = self._position_by_id(manager_id)
         agent_id = pos.get("agent", "")
-        agent_can_run = (
-            agent_id
-            and agent_enabled(root, agent_id)
-            and agent_allowed(root, agent_id)
-        )
+        agent_can_run, reason = agent_can_execute(root, agent_id)
         auto_mock = mock or not agent_can_run
         self._auto_mock = auto_mock  # 记录状态供后续 try_complete_orchestration 使用
         if auto_mock and not mock:
-            reason = "Agent 未安装或被禁用" if not agent_can_run else "手动 mock"
-            logger.info("begin_orchestration: auto-mock (reason=%s, agent=%s)", reason, agent_id)
+            reason_msg = reason if not agent_can_run else "手动 mock"
+            logger.info("begin_orchestration: auto-mock (reason=%s, agent=%s)", reason_msg, agent_id)
 
         env = {"STUDIO_MOCK": "1"} if auto_mock else {}
         if auto_mock:
@@ -182,7 +169,7 @@ class Dispatcher:
         supervisor.ensure_running()
         if spawn_terminals and not auto_mock:
             pos = self._position_by_id(manager_id)
-            orch = _orchestration_settings(root)
+            orch = get_orchestration_settings(root)
             show_manager_terminal = bool(orch.get("spawn_manager_terminal", False))
             write_state(
                 self.project_dir / "agents" / manager_id,
@@ -302,46 +289,117 @@ class Dispatcher:
     def _run_mock_workers_and_review(self, root: Path, root_task_id: str) -> None:
         """Mock 模式：同步模拟 Worker 执行 → 交付 → 审查 → 归档。
 
-        为每个 assigned Worker 在独立的 mock worktree 目录写入 DELIVER.json，
-        通过 poll_worker_deliveries 统一扫描处理，再行规则审查，
-        完成全流程闭环。
+        为每个就绪的 Worker 在独立的 mock worktree 目录写入 DELIVER.json，
+        通过统一扫描处理 + 规则审查完成全流程闭环。
+        支持多轮处理：依赖解除后自动处理新就绪的 Worker。
         """
-        from core.dispatch.delivery import (
-            DELIVER_REL,
-            apply_manager_verdict,
-            find_deliver_files,
-            load_delivery_record,
-            load_deliver_payload,
-            process_worker_delivery,
-        )
-
         manager_id = self._root_manager_id()
         project_root = self._repo_path(root) or self.project_dir
 
-        # 收集 assigned Worker 并构建任务索引
+        # 多轮处理：初始 assigned + 依赖解除后新就绪的 blocked 任务
+        all_tasks_by_id: dict[str, dict] = {}
+        for _round in range(10):  # 安全上限，防止死循环
+            # 收集当前就绪的 Worker（assigned 且未被处理过）
+            tasks_by_id, ready_workers = self._gather_ready_workers(
+                root_task_id, all_tasks_by_id
+            )
+            if not ready_workers:
+                break
+
+            self._write_mock_deliveries(ready_workers)
+            self._process_mock_reviews(project_root, tasks_by_id, manager_id)
+
+            # 合并已处理的任务索引
+            all_tasks_by_id.update(tasks_by_id)
+
+        # 检查依赖后继续派发被解除阻塞的任务
+        self._unblock_ready_tasks()
+
+        # 若 active 中不再有该编排的子任务，根任务归档
+        remaining_children = [
+            p for p in self.tasks_active.glob("*.yaml")
+            if yaml.safe_load(p.read_text(encoding="utf-8")).get("parent_id") == root_task_id
+        ]
+        if not remaining_children:
+            self._update_task_status(root_task_id, "archived")
+
+    def _gather_ready_workers(
+        self, root_task_id: str, already_processed: dict[str, dict] | None = None
+    ) -> tuple[dict[str, dict], list[dict]]:
+        """收集 root_task 下所有就绪（assigned 或 deps 已满足的 blocked）的子任务。
+
+        跳过 already_processed 中已有且已归档的任务。
+        """
+        already_processed = already_processed or {}
         tasks_by_id: dict[str, dict] = {}
-        assigned_workers: list[dict] = []
+        ready_workers: list[dict] = []
+
         for p in sorted(self.tasks_active.glob("*.yaml")):
             task = yaml.safe_load(p.read_text(encoding="utf-8"))
             tid = str(task.get("id") or "")
-            if tid:
-                tasks_by_id[tid] = task
+            if not tid:
+                continue
+            tasks_by_id[tid] = task
             if task.get("parent_id") != root_task_id:
                 continue
-            if task.get("status") == "assigned":
-                assigned_workers.append(task)
 
-        if not assigned_workers:
-            logger.warning("mock workers: no assigned workers found for %s", root_task_id)
-            return
+            status = task.get("status", "")
+            if status == "assigned":
+                # 跳过已在上一轮处理过的
+                if tid in already_processed:
+                    prev = already_processed[tid]
+                    if prev.get("status") in ("archived",):
+                        continue
+                ready_workers.append(task)
+            elif status == "blocked":
+                # 检查依赖是否已满足（可能在上一轮刚完成）
+                waits_on = task.get("waits_on") or []
+                deps_met = True
+                for dep_id in waits_on:
+                    # dep 是 position_id（如 xiaohong），需找对应 task
+                    dep_found = False
+                    # 1) 检查当前 active tasks_by_id
+                    for dt in tasks_by_id.values():
+                        if dt.get("assignee") == dep_id and dt.get("parent_id") == root_task_id:
+                            if dt.get("status") == "archived":
+                                dep_found = True
+                                break
+                    # 2) 检查 already_processed（上一轮的任务快照）
+                    if not dep_found:
+                        for dt in already_processed.values():
+                            if dt.get("assignee") == dep_id and dt.get("parent_id") == root_task_id:
+                                if dt.get("status") == "archived":
+                                    dep_found = True
+                                    break
+                    # 3) 检查 archive 目录（任务已归档）
+                    if not dep_found:
+                        for ap in sorted(self.tasks_archive.glob("*.yaml")):
+                            at = yaml.safe_load(ap.read_text(encoding="utf-8"))
+                            if at.get("assignee") == dep_id and at.get("parent_id") == root_task_id:
+                                dep_found = True
+                                break
+                    if not dep_found:
+                        deps_met = False
+                        break
+                if deps_met:
+                    task["status"] = "assigned"
+                    task["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    task_path = self.tasks_active / f"{tid}.yaml"
+                    task_path.write_text(
+                        yaml.dump(task, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8",
+                    )
+                    ready_workers.append(task)
 
-        # 为每个 Worker 在独立目录写入 DELIVER.json（避免路径冲突）
+        return tasks_by_id, ready_workers
+
+    def _write_mock_deliveries(self, assigned_workers: list[dict]) -> None:
+        """为每个 Worker 在独立 mock worktree 写入 DELIVER.json。"""
         for task in assigned_workers:
             sub_id = str(task.get("id") or "")
             assignee = str(task.get("assignee") or "")
             description = str(task.get("description") or "")
 
-            # 每个 Worker 独立的 mock worktree
             mock_wt = self.project_dir / "workspaces" / f"{sub_id}-mock"
             mock_wt.mkdir(parents=True, exist_ok=True)
             studio_dir = mock_wt / ".studio"
@@ -349,16 +407,28 @@ class Dispatcher:
 
             deliver_path = studio_dir / "DELIVER.json"
             from core.dispatch.delivery import generate_mock_delivery as _gen_deliver
-            deliver = _gen_deliver(
-                self.project_dir, sub_id, assignee, description
-            )
+            deliver = _gen_deliver(self.project_dir, sub_id, assignee, description)
             deliver_path.write_text(
                 json.dumps(deliver, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             logger.info("mock worker: %s (%s) wrote DELIVER.json", sub_id, assignee)
 
-        # 扫描并处理所有交付（复用统一的 poll → process → review 链路）
+    def _process_mock_reviews(
+        self,
+        project_root: Path,
+        tasks_by_id: dict[str, dict],
+        manager_id: str,
+    ) -> None:
+        """扫描 mock 交付 → process → 规则审查。"""
+        from core.dispatch.delivery import (
+            apply_manager_verdict,
+            find_deliver_files,
+            load_delivery_record,
+            load_deliver_payload,
+            process_worker_delivery,
+        )
+
         for deliver_path in find_deliver_files(self.project_dir, project_root):
             if deliver_path.name.endswith(".processed"):
                 continue
@@ -371,11 +441,10 @@ class Dispatcher:
                 continue
             if task.get("status") in ("archived", "in_review", "escalated"):
                 continue
-            worktree = deliver_path.parent.parent  # .studio/DELIVER.json → parent=.studio → parent=worktree
+            worktree = deliver_path.parent.parent
             process_worker_delivery(
                 self.project_dir, task, deliver, worktree, manager_id=manager_id
             )
-            # 标记已处理
             done = deliver_path.with_name(deliver_path.name + ".processed")
             if not done.exists():
                 deliver_path.rename(done)
@@ -395,16 +464,48 @@ class Dispatcher:
                 manager_id=manager_id,
             )
 
-        # 检查依赖后继续派发被解除阻塞的任务
-        self._unblock_ready_tasks()
+    def _mock_single_worker(
+        self,
+        root: Path,
+        sub_id: str,
+        assignee: str,
+        task: dict,
+        root_task_id: str,
+    ) -> None:
+        """为单个不可用 Agent 的 Worker 生成 mock 交付 + 审查。"""
+        from core.dispatch.delivery import (
+            apply_manager_verdict,
+            generate_mock_delivery,
+            process_worker_delivery,
+        )
+        manager_id = self._root_manager_id()
+        project_root = self._repo_path(root) or self.project_dir
+        description = str(task.get("description", ""))
 
-        # 若 active 中不再有该编排的子任务，根任务归档
-        remaining_children = [
-            p for p in self.tasks_active.glob("*.yaml")
-            if yaml.safe_load(p.read_text(encoding="utf-8")).get("parent_id") == root_task_id
-        ]
-        if not remaining_children:
-            self._update_task_status(root_task_id, "archived")
+        # 写 mock DELIVER.json
+        mock_wt = self.project_dir / "workspaces" / f"{sub_id}-mock"
+        mock_wt.mkdir(parents=True, exist_ok=True)
+        studio_dir = mock_wt / ".studio"
+        studio_dir.mkdir(parents=True, exist_ok=True)
+        deliver = generate_mock_delivery(self.project_dir, sub_id, assignee, description)
+        deliver_path = studio_dir / "DELIVER.json"
+        deliver_path.write_text(
+            json.dumps(deliver, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        # process + review
+        process_worker_delivery(
+            self.project_dir, task, deliver, mock_wt, manager_id=manager_id
+        )
+        verdict = "approved"
+        comment = f"[mock] Agent 不可用，自动通过 — {assignee}"
+        apply_manager_verdict(
+            self.project_dir, sub_id, verdict, comment=comment, manager_id=manager_id
+        )
+        # 标记已处理
+        done = deliver_path.with_name(deliver_path.name + ".processed")
+        if not done.exists():
+            deliver_path.rename(done)
+        logger.info("mock single worker: %s (%s) auto-approved", sub_id, assignee)
 
     def _remove_spawned_worker_id(self, root_task_id: str, subtask_id: str) -> None:
         """spawn 失败时撤销记录，便于下次轮询重试。"""
@@ -464,11 +565,22 @@ class Dispatcher:
 
             assignee = task["assignee"]
             pos = self._position_by_id(assignee)
+            agent_id = pos.get("agent", "")
+
+            # 该 Worker 的 Agent 不可用 → mock 交付，不 spawn 终端
+            can_run, _ = agent_can_execute(root, agent_id)
+            if not can_run:
+                logger.info(
+                    "worker %s agent %s unavailable, using mock delivery", assignee, agent_id
+                )
+                self._mock_single_worker(root, sub_id, assignee, task, root_task_id)
+                self._save_spawned_worker_id(root_task_id, sub_id)
+                continue
 
             # PID-Aware: 若该 Agent 进程还活着，push inbox 而非 spawn 新终端
             from core.terminal.agent_launcher import is_agent_process_alive
 
-            if is_agent_process_alive(assignee):
+            if is_agent_process_alive(self.project_dir, assignee):
                 logger.info(
                     "worker %s PID alive, pushing to inbox instead of spawn", assignee
                 )
@@ -517,6 +629,39 @@ class Dispatcher:
                 self._remove_spawned_worker_id(root_task_id, sub_id)
             finally:
                 self._worker_spawn_inflight.discard(sub_id)
+
+        # 混合模式：解除依赖后处理新就绪的 Worker
+        if not mock:
+            unblocked = self._unblock_ready_tasks()
+            if unblocked:
+                # 第二轮：处理刚解除阻塞的 Worker
+                for path in sorted(self.tasks_active.glob("*.yaml")):
+                    try:
+                        task = yaml.safe_load(path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if not task or task.get("parent_id") != root_task_id:
+                        continue
+                    if task.get("status") != "assigned":
+                        continue
+                    sub_id = str(task.get("id") or "")
+                    if sub_id in spawned:
+                        continue
+                    assignee = task["assignee"]
+                    pos = self._position_by_id(assignee)
+                    agent_id = pos.get("agent", "")
+                    can_run, _ = agent_can_execute(root, agent_id)
+                    if not can_run:
+                        logger.info("worker %s (unblocked) using mock", assignee)
+                        self._mock_single_worker(root, sub_id, assignee, task, root_task_id)
+                        self._save_spawned_worker_id(root_task_id, sub_id)
+            # 归档检查
+            remaining = [
+                p for p in self.tasks_active.glob("*.yaml")
+                if yaml.safe_load(p.read_text(encoding="utf-8")).get("parent_id") == root_task_id
+            ]
+            if not remaining:
+                self._update_task_status(root_task_id, "archived")
 
     def _position_by_id(self, position_id: str) -> dict[str, Any]:
         for pos in self.list_positions():

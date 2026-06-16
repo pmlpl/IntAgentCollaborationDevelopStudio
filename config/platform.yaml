@@ -1,7 +1,7 @@
 memory:
-  backend: sqlite               # file | sqlite | chromadb — chromadb 启用向量语义搜索
+  backend: sqlite
   store_dir: platform/memory/store
-  chromadb_dir: platform/memory/chromadb  # chromadb 持久化目录
+  chromadb_dir: platform/memory/chromadb
 mcp:
   gateway_enabled: false
   audit_relative: agents/{position_id}/logs/mcp-audit.log
@@ -12,7 +12,12 @@ review:
 agents:
   policy: byok_only
   default: opencode
-  disabled: []
+  disabled:
+  - goose
+  - aider
+  - gemini-cli
+  - codex
+  - opencode
   auto_detect: true
   fallback_order:
   - opencode
@@ -23,7 +28,7 @@ orchestration:
   worker_terminal_agent: opencode
   use_position_agent: true
   spawn_manager_terminal: false
-  decompose_fallback: mock
+  decompose_fallback: raise
 research:
   mode: agent
   agent: opencode

@@ -18,12 +18,18 @@ class AgentRunContext:
 
 
 class BaseAgentAdapter(ABC):
-    """外部 CLI Agent 适配器基类。"""
+    """外部 CLI Agent 适配器基类。
+
+    子类只需实现 build_command()；build_interactive_command() 可选覆写。
+    实际执行由 agents.runner / agents.registry 通过 subprocess 完成，
+    适配器本身不负责 subprocess 调用。
+    """
 
     @abstractmethod
     def build_command(self, ctx: AgentRunContext) -> list[str]:
+        """构建 headless 捕获模式下的命令行参数。"""
         ...
 
-    @abstractmethod
-    def run(self, ctx: AgentRunContext) -> int:
-        ...
+    def build_interactive_command(self, ctx: AgentRunContext) -> list[str]:
+        """构建交互式 TUI 模式下的命令行参数。默认等同于 headless 模式。"""
+        return self.build_command(ctx)

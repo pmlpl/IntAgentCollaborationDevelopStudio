@@ -24,15 +24,17 @@ def _setup_project(tmp_path: Path) -> Dispatcher:
 
 
 def test_orchestration_progress_after_create(tmp_path: Path):
+    """Step 1: just created — 5%."""
     disp = _setup_project(tmp_path)
     task = disp.create_task("加搜索框")
     prog = compute_orchestration_progress(disp.project_dir, task["id"], description="加搜索框")
-    assert prog.percent == 25
-    assert prog.steps[0].done
-    assert prog.steps[1].active is False
+    assert prog.percent == 5
+    assert prog.steps[0].done  # step 1: 创建根任务
+    assert prog.steps[1].active is False  # step 2: not decomposing yet
 
 
 def test_orchestration_progress_manager_working(tmp_path: Path):
+    """Step 2: manager working — 10-28%."""
     disp = _setup_project(tmp_path)
     task = disp.create_task("加搜索框")
     write_state(
@@ -45,12 +47,13 @@ def test_orchestration_progress_manager_working(tmp_path: Path):
         ),
     )
     prog = compute_orchestration_progress(disp.project_dir, task["id"])
-    assert 25 <= prog.percent < 50
-    assert prog.steps[1].active
+    assert 10 <= prog.percent <= 28
+    assert prog.steps[1].active  # step 2: 主管拆解中
     assert "拆解" in prog.message
 
 
 def test_orchestration_progress_decomposed(tmp_path: Path):
+    """Step 2→3: decomposed but not yet assigned — ~28%."""
     import json
 
     disp = _setup_project(tmp_path)
@@ -62,5 +65,5 @@ def test_orchestration_progress_decomposed(tmp_path: Path):
         encoding="utf-8",
     )
     prog = compute_orchestration_progress(disp.project_dir, task["id"])
-    assert prog.percent >= 50
-    assert prog.steps[1].done
+    assert prog.percent >= 25  # decomposed, ≥ step 2 done
+    assert prog.steps[1].done  # step 2: 主管拆解完成

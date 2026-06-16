@@ -4,7 +4,7 @@ from __future__ import annotations
 import yaml
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
@@ -30,7 +30,7 @@ class ReviewScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Vertical(
+        yield VerticalScroll(
             Static("[bold]CEO 审批[/]", classes="title-text"),
             Static("[dim]↑↓ 选中 · A 通过 · X 打回 · Esc 返回[/]", classes="page-hint"),
             ListView(id="review-list"),

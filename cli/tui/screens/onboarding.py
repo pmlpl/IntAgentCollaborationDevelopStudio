@@ -61,7 +61,7 @@ class OnboardingScreen(Screen):
         org_options = ui_select_options(list_org_templates())
         yield Header(show_clock=True)
         yield Container(
-            Vertical(
+            VerticalScroll(
                 Static("[bold]新建项目[/]", classes="title-text"),
                 Static("", id="step-indicator", classes="muted"),
                 Vertical(

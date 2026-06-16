@@ -37,9 +37,11 @@ def test_build_interactive_argv_opencode_run_interactive(tmp_path: Path):
         cfg, task_file_rel=Path(STUDIO_TASK_REL), worktree=worktree
     )
     assert "run" in argv
-    assert "-i" in argv
+    # -i flag removed (opencode no longer supports it); -f never present
     assert "-f" not in argv
+    # Task text is in the last arg (with delivery reminder appended)
     assert "CEO 任务正文" in argv[-1]
+    assert "DELIVER.json" in argv[-1]  # delivery reminder appended
 
 
 def test_build_interactive_argv_hermes_tui():

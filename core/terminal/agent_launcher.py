@@ -5,8 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from agents.execute import (
     agent_launch_check_error,
     agent_subprocess_env,
@@ -24,24 +22,15 @@ from cli.relay_agent import wrap_argv_for_windows_terminal
 from agents.registry import load_agent_config, load_agents_config
 from agents.runner import agent_available, load_position
 from core.config.agent_policy import agent_allowed, agent_is_byok, agent_policy, pick_spawn_agent_id
+from core.config.platform_settings import get_orchestration_settings
 from core.platform.skills_client import prepare_worker_runtime
 from core.runtime.state import AgentRuntimeState, write_state
 from core.terminal.spawner import spawn_agent_terminal
 
 
-def _orchestration_settings(root: Path) -> dict[str, Any]:
-    """读取 platform.yaml orchestration 段。"""
-    path = root / "config" / "platform.yaml"
-    if not path.is_file():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    orch = data.get("orchestration")
-    return orch if isinstance(orch, dict) else {}
-
-
 def resolve_spawn_agent_id(root: Path, position_agent_id: str) -> str:
     """Worker 编排时选用哪个 Agent：跟岗位或 platform 覆盖，并受 BYOK 策略约束。"""
-    orch = _orchestration_settings(root)
+    orch = get_orchestration_settings(root)
     if orch.get("use_position_agent", True):
         raw = position_agent_id
     else:
@@ -73,12 +62,13 @@ def _ensure_hermes_config() -> None:
     )
 
 
-def _agent_pid_registry_path() -> Path:
-    """Agent 进程 PID 注册表路径。"""
-    return Path.home() / ".studio" / "agent_pids.json"
+def _agent_pid_registry_path(project_dir: Path) -> Path:
+    """Agent 进程 PID 注册表路径（项目级，避免多项目并发冲突）。"""
+    return project_dir / ".studio" / "agent_pids.json"
 
 
 def _save_agent_pid_registry(
+    project_dir: Path,
     agent_id: str,
     *,
     task_id: str = "",
@@ -89,7 +79,7 @@ def _save_agent_pid_registry(
     import json as _json
     from datetime import datetime, timezone as _tz
 
-    path = _agent_pid_registry_path()
+    path = _agent_pid_registry_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {}
     if path.is_file():
@@ -108,11 +98,11 @@ def _save_agent_pid_registry(
     path.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def load_agent_pid_registry() -> dict[str, Any]:
+def load_agent_pid_registry(project_dir: Path) -> dict[str, Any]:
     """读取当前已登记的 Agent 进程信息。"""
     import json as _json
 
-    path = _agent_pid_registry_path()
+    path = _agent_pid_registry_path(project_dir)
     if not path.is_file():
         return {}
     try:
@@ -122,12 +112,12 @@ def load_agent_pid_registry() -> dict[str, Any]:
         return {}
 
 
-def is_agent_process_alive(agent_id: str) -> bool:
+def is_agent_process_alive(project_dir: Path, agent_id: str) -> bool:
     """检查登记的 Agent 进程是否仍在运行。"""
     import ctypes
     import json as _json
 
-    registry = load_agent_pid_registry()
+    registry = load_agent_pid_registry(project_dir)
     entry = registry.get(agent_id)
     if not entry:
         return False
@@ -181,6 +171,7 @@ def spawn_agent_tui(
     prompt: str = "",
     task_id: str = "",
     role: str = "",
+    assignee_id: str = "",
     respect_policy: bool = True,
     project_dir: Path | None = None,
 ) -> None:
@@ -204,10 +195,10 @@ def spawn_agent_tui(
     if prompt.strip():
         if project_dir is not None:
             task_body = format_worker_task_prompt(
-                project_dir, prompt, task_id=task_id, role=role
+                project_dir, prompt, task_id=task_id, role=role, assignee_id=assignee_id
             )
         else:
-            task_body = format_task_prompt(prompt, task_id=task_id, role=role)
+            task_body = format_task_prompt(prompt, task_id=task_id, role=role, assignee_id=assignee_id)
         task_rel = write_task_context_file(cwd, task_body)
         if str(cfg.get("command") or "") == "hermes":
             hermes_env = prepare_hermes_worker_context(
@@ -236,7 +227,8 @@ def spawn_agent_tui(
         env.update({str(k): str(v) for k, v in agent_env.items()})
     proc = spawn_agent_terminal(title, cmd, cwd, env, interactive=True)
     # 记录 Agent 进程 PID，供后续健康检查与会话复用
-    _save_agent_pid_registry(agent_id, task_id=task_id, pid=proc.pid, worktree=str(cwd))
+    pid_project = project_dir if project_dir is not None else cwd
+    _save_agent_pid_registry(pid_project, agent_id, task_id=task_id, pid=proc.pid, worktree=str(cwd))
 
 
 def spawn_catalog_command_tui(
@@ -298,6 +290,7 @@ def spawn_position_tui(
         prompt=prompt,
         task_id=task_id,
         role=role,
+        assignee_id=position_id,
         project_dir=project_dir,
     )
     write_state(

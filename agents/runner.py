@@ -123,9 +123,9 @@ def _agent_task_timeout(root: Path, task_type: str = "default") -> int:
     if isinstance(val, (int, float)) and val > 0:
         return int(val)
     if task_type == "decompose":
-        return 180
+        return 300  # complex decomposition needs more time with slower models
     if task_type == "research":
-        return 120
+        return 180
     return 120
 
 
@@ -191,10 +191,25 @@ def run_position_task_capture(
 
     try:
         result = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, **CAPTURE_TEXT_KW)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        partial_stdout = (exc.stdout or b"").decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        partial_stderr = (exc.stderr or b"").decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        partial = (partial_stdout + "\n" + partial_stderr).strip()
         msg = f"Agent 执行超时（>{timeout}s）"
-        logger.error("position %s: %s", position_id, msg)
-        log_path.write_text(f"[TIMEOUT] {msg}\n--- raw ---\n(timeout, no output captured)\n", encoding="utf-8")
+        logger.error("position %s: %s (partial=%d chars)", position_id, msg, len(partial))
+        log_path.write_text(
+            f"[TIMEOUT] {msg}\n--- partial stdout/stderr ({len(partial)} chars) ---\n{partial[:4000]}\n",
+            encoding="utf-8",
+        )
+        # If we have partial output, try to use it (the marker/JSON might be in there)
+        if partial:
+            normalized = normalize_agent_capture(agent_command, partial)
+            if len(normalized) > 50:
+                write_state(
+                    agent_dir,
+                    AgentRuntimeState(status="submitted", progress=95, message="超时但有输出，尝试解析"),
+                )
+                return 0, normalized
         write_state(
             agent_dir,
             AgentRuntimeState(status="idle", progress=0, message=msg),

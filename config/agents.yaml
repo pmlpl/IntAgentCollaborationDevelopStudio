@@ -7,7 +7,7 @@ agents:
   claude-code:
     name: Claude Code
     command: claude
-    byok: false
+    byok: true
     flags: "-p"
     flags_interactive: "--dangerously-skip-permissions"
     interactive:
@@ -48,7 +48,7 @@ agents:
     command: hermes
     byok: true
     flags: "chat -q"
-    flags_interactive: "chat --tui --yes"
+    flags_interactive: "chat --tui"
     interactive:
       mode: task_file_context
       # 任务注入：.hermes.md + AGENTS.md + HERMES_TUI_QUERY（见 agent_launcher）
@@ -76,7 +76,7 @@ agents:
     command: opencode
     byok: true
     flags: "run"
-    flags_interactive: "--model deepseek/deepseek-chat --yes"
+    flags_interactive: "--model deepseek/deepseek-chat"
     interactive:
       mode: run_interactive
     strengths: [多模型, 重构, 75+提供商]

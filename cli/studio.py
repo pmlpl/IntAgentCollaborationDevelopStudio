@@ -54,7 +54,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     set_current_project(root, args.name)
     entry = get_registry_entry(root, args.name)
     project_root = entry["path"] if entry else str(project_dir.parent)
-    print(f"✓ 项目已创建: {args.name}")
+    print(f"[OK] 项目已创建: {args.name}")
     print(f"  项目文件夹: {project_root}")
     print(f"  数据目录: {project_dir}")
     print(f"  组织: {project_dir / 'positions.yaml'}")
@@ -84,10 +84,10 @@ def cmd_task(args: argparse.Namespace) -> int:
             time.sleep(interval)
             waited += interval
         else:
-            print(f"  ⚠ 编排未在 {max_wait}s 内完成，请用 studio TUI 或重试")
+            print(f"  [!!] 编排未在 {max_wait}s 内完成，请用 studio TUI 或重试")
     else:
         task = disp.create_task(args.description)
-    print(f"✓ 任务已创建: {task['id']}")
+    print(f"[OK] 任务已创建: {task['id']}")
     if task.get("status"):
         print(f"  状态: {task['status']}")
     return 0
@@ -119,7 +119,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(f"  [{i}] {task['id']} — {task['description'][:60]} ({task['status']})")
     if args.verdict and args.task_id:
         result = disp.submit_review(args.task_id, args.verdict)
-        print(f"✓ 任务 {args.task_id} → {result['status']}")
+        print(f"[OK] 任务 {args.task_id} → {result['status']}")
     return 0
 
 
@@ -179,7 +179,7 @@ def cmd_project_update(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(f"✓ 项目已更新: {args.name}")
+    print(f"[OK] 项目已更新: {args.name}")
     return 0
 
 
@@ -192,11 +192,16 @@ def cmd_project_delete(args: argparse.Namespace) -> int:
         print("若确认，请加上 --yes")
         return 1
     try:
-        delete_project(root, args.name, remove_folder=True)
-    except (FileNotFoundError, ValueError, OSError) as exc:
+        folder_deleted, warning = delete_project(root, args.name, remove_folder=True)
+    except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(f"✓ 项目已删除（含文件夹）: {args.name}")
+    if warning:
+        print(f"[!!] {warning}")
+    if folder_deleted:
+        print(f"OK 项目已删除（含文件夹）: {args.name}")
+    else:
+        print(f"OK 项目已从列表移除（文件夹未删除或不存在）: {args.name}")
     return 0
 
 
@@ -310,168 +315,197 @@ def cmd_memory_upsert(args: argparse.Namespace) -> int:
     except MemoryError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(f"✓ 已写入: {path}")
+    print(f"[OK] 已写入: {path}")
     print(f"  命名空间: {namespace}")
     return 0
 
 
 def build_parser(*, subparsers_required: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="studio", description="IntAgent 协作开发管理平台")
-    parser.add_argument(
-        "--plain",
-        action="store_true",
-        help="强制 plain CLI，不启动 TUI",
-    )
+    parser.add_argument("--plain", action="store_true", help="强制 plain CLI，不启动 TUI")
     sub = parser.add_subparsers(dest="command", required=subparsers_required)
 
-    p_init = sub.add_parser("init", help="创建新项目")
-    p_init.add_argument("--name", required=True, help="项目 id")
-    p_init.add_argument(
-        "--path",
-        default=None,
-        help="项目文件夹（代码仓库根，.studio/ 存管理数据）",
-    )
-    p_init.add_argument("--repo", default=None, help="同 --path（兼容旧参数）")
-    p_init.add_argument("--description", default=None)
-    p_init.set_defaults(func=cmd_init)
-
-    p_task = sub.add_parser("task", help="下达任务")
-    p_task.add_argument("description", help="任务描述")
-    p_task.add_argument("--project", default=None)
-    p_task.add_argument("--orchestrate", action="store_true", help="完整编排+spawn")
-    p_task.add_argument("--no-spawn", action="store_true")
-    p_task.add_argument("--mock", action="store_true")
-    p_task.set_defaults(func=cmd_task)
-
-    p_status = sub.add_parser("status", help="查看进度")
-    p_status.add_argument("--project", default=None)
-    p_status.set_defaults(func=cmd_status)
-
-    p_review = sub.add_parser("review", help="审批")
-    p_review.add_argument("--project", default=None)
-    p_review.add_argument("--task-id", default=None)
-    p_review.add_argument("--verdict", choices=["approved", "rejected", "escalated"], default=None)
-    p_review.set_defaults(func=cmd_review)
-
-    p_project = sub.add_parser("project", help="项目增删改查")
-    p_project_sub = p_project.add_subparsers(dest="project_command", required=True)
-
-    p_plist = p_project_sub.add_parser("list", help="列出项目")
-    p_plist.set_defaults(func=cmd_project_list)
-
-    p_pshow = p_project_sub.add_parser("show", help="查看项目")
-    p_pshow.add_argument("name", help="项目 id")
-    p_pshow.set_defaults(func=cmd_project_show)
-
-    p_pupdate = p_project_sub.add_parser("update", help="更新项目 registry")
-    p_pupdate.add_argument("name", help="项目 id")
-    p_pupdate.add_argument("--display-name", default=None, help="显示名称")
-    p_pupdate.add_argument("--purpose", default=None, help="项目定位")
-    p_pupdate.add_argument("--path", default=None, help="项目文件夹")
-    p_pupdate.set_defaults(func=cmd_project_update)
-
-    p_pdelete = p_project_sub.add_parser("delete", help="删除项目（含整个项目文件夹）")
-    p_pdelete.add_argument("name", help="项目 id")
-    p_pdelete.add_argument(
-        "--yes",
-        action="store_true",
-        help="确认删除（不可恢复）",
-    )
-    p_pdelete.set_defaults(func=cmd_project_delete)
-
-    p_skills = sub.add_parser("skills", help="技能仓库")
-    p_skills_sub = p_skills.add_subparsers(dest="skills_command", required=True)
-    p_slist = p_skills_sub.add_parser("list", help="列出已注册技能")
-    p_slist.set_defaults(func=cmd_skills_list)
-
-    p_mcp = sub.add_parser("mcp", help="MCP 服务注册表")
-    p_mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
-    p_mlist = p_mcp_sub.add_parser("list", help="列出已注册 MCP")
-    p_mlist.set_defaults(func=cmd_mcp_list)
-
-    p_memory = sub.add_parser("memory", help="记忆中台")
-    p_memory_sub = p_memory.add_subparsers(dest="memory_command", required=True)
-    p_mem_list = p_memory_sub.add_parser("list", help="列出命名空间")
-    p_mem_list.set_defaults(func=cmd_memory_list)
-    p_mem_search = p_memory_sub.add_parser("search", help="搜索记忆")
-    p_mem_search.add_argument(
-        "namespace",
-        help="命名空间：project（当前项目）或 project/{项目id}，如 project/222",
-    )
-    p_mem_search.add_argument("query", help="关键词")
-    p_mem_search.add_argument("--project", default=None)
-    p_mem_search.add_argument("--position", default="laowang", help="以何岗位身份查询")
-    p_mem_search.add_argument("--limit", type=int, default=10)
-    p_mem_search.set_defaults(func=cmd_memory_search)
-    p_mem_upsert = p_memory_sub.add_parser("upsert", help="写入记忆")
-    p_mem_upsert.add_argument(
-        "namespace",
-        help="命名空间：project（当前项目）或 project/{项目id}",
-    )
-    p_mem_upsert.add_argument("key", help="键")
-    p_mem_upsert.add_argument("--text", default="", help="正文")
-    p_mem_upsert.add_argument("--file", default=None, help="从文件读取正文")
-    p_mem_upsert.add_argument("--project", default=None)
-    p_mem_upsert.add_argument("--position", default="laowang", help="以何岗位身份写入")
-    p_mem_upsert.set_defaults(func=cmd_memory_upsert)
-
-    p_org = sub.add_parser("org", help="组织树编辑")
-    p_org_sub = p_org.add_subparsers(dest="org_command", required=True)
-    p_org_show = p_org_sub.add_parser("show", help="显示组织树")
-    p_org_show.add_argument("--project", default=None)
-    p_org_show.set_defaults(func=cmd_org_show)
-    p_org_add = p_org_sub.add_parser("add", help="添加岗位")
-    p_org_add.add_argument("role", help="岗位 id，如 xiaomo")
-    p_org_add.add_argument("--parent", default=None, help="上级 id")
-    p_org_add.add_argument("--project", default=None)
-    p_org_add.set_defaults(func=cmd_org_add)
-    p_org_move = p_org_sub.add_parser("move", help="移动岗位")
-    p_org_move.add_argument("node", help="要移动的岗位 id")
-    p_org_move.add_argument("parent", help="新上级 id")
-    p_org_move.add_argument("--project", default=None)
-    p_org_move.set_defaults(func=cmd_org_move)
-    p_org_rm = p_org_sub.add_parser("remove", help="删除岗位")
-    p_org_rm.add_argument("node", help="岗位 id")
-    p_org_rm.add_argument(
-        "--strategy",
-        default="reassign_to_parent",
-        choices=["reassign_to_parent", "promote_children", "archive"],
-    )
-    p_org_rm.add_argument("--project", default=None)
-    p_org_rm.set_defaults(func=cmd_org_remove)
-
+    _register_init_parser(sub)
+    _register_task_parser(sub)
+    _register_status_parser(sub)
+    _register_review_parser(sub)
+    _register_project_parsers(sub)
+    _register_skills_parser(sub)
+    _register_mcp_parser(sub)
+    _register_memory_parsers(sub)
+    _register_org_parsers(sub)
     register_agent_commands(sub)
-
-    p_expand = sub.add_parser("expand", help="扩建公司（交互式或子命令）")
-    p_expand.add_argument("--project", default=None)
-    p_expand_sub = p_expand.add_subparsers(dest="expand_command")
-    p_exp_biz = p_expand_sub.add_parser("business", help="开新业务线")
-    p_exp_biz.add_argument("description", nargs="?", default=None, help="业务描述")
-    p_exp_biz.add_argument("--template", default=None)
-    p_exp_biz.add_argument("--yes", action="store_true", help="确认新增")
-    p_exp_biz.add_argument("--project", default=None)
-    p_exp_biz.set_defaults(func=cmd_expand_business)
-    p_exp_role = p_expand_sub.add_parser("role", help="部门内加人")
-    p_exp_role.add_argument("role", help="岗位 id")
-    p_exp_role.add_argument("--parent", default=None)
-    p_exp_role.add_argument("--project", default=None)
-    p_exp_role.set_defaults(func=cmd_expand_role)
-    p_exp_mgr = p_expand_sub.add_parser("manager", help="插入管理层")
-    p_exp_mgr.add_argument("--id", required=True, dest="id", help="新主管 id")
-    p_exp_mgr.add_argument("--name", default=None)
-    p_exp_mgr.add_argument("--title", default="组长")
-    p_exp_mgr.add_argument("--reports-to", required=True, dest="reports_to")
-    p_exp_mgr.add_argument("--children", required=True, help="下属 id，逗号分隔")
-    p_exp_mgr.add_argument("--agent", default="opencode")
-    p_exp_mgr.add_argument("--model", default="deepseek-v4-pro")
-    p_exp_mgr.add_argument("--project", default=None)
-    p_exp_mgr.set_defaults(func=cmd_expand_manager)
-    p_expand.set_defaults(func=cmd_expand_interactive)
+    _register_expand_parsers(sub)
 
     return parser
 
 
+def _register_init_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("init", help="创建新项目")
+    p.add_argument("--name", required=True, help="项目 id")
+    p.add_argument("--path", default=None, help="项目文件夹（代码仓库根，.studio/ 存管理数据）")
+    p.add_argument("--repo", default=None, help="同 --path（兼容旧参数）")
+    p.add_argument("--description", default=None)
+    p.set_defaults(func=cmd_init)
+
+
+def _register_task_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("task", help="下达任务")
+    p.add_argument("description", help="任务描述")
+    p.add_argument("--project", default=None)
+    p.add_argument("--orchestrate", action="store_true", help="完整编排+spawn")
+    p.add_argument("--no-spawn", action="store_true")
+    p.add_argument("--mock", action="store_true")
+    p.set_defaults(func=cmd_task)
+
+
+def _register_status_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("status", help="查看进度")
+    p.add_argument("--project", default=None)
+    p.set_defaults(func=cmd_status)
+
+
+def _register_review_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("review", help="审批")
+    p.add_argument("--project", default=None)
+    p.add_argument("--task-id", default=None)
+    p.add_argument("--verdict", choices=["approved", "rejected", "escalated"], default=None)
+    p.set_defaults(func=cmd_review)
+
+
+def _register_project_parsers(sub: argparse._SubParsersAction) -> None:
+    p_project = sub.add_parser("project", help="项目增删改查")
+    p_sub = p_project.add_subparsers(dest="project_command", required=True)
+
+    p_list = p_sub.add_parser("list", help="列出项目")
+    p_list.set_defaults(func=cmd_project_list)
+
+    p_show = p_sub.add_parser("show", help="查看项目")
+    p_show.add_argument("name", help="项目 id")
+    p_show.set_defaults(func=cmd_project_show)
+
+    p_update = p_sub.add_parser("update", help="更新项目 registry")
+    p_update.add_argument("name", help="项目 id")
+    p_update.add_argument("--display-name", default=None, help="显示名称")
+    p_update.add_argument("--purpose", default=None, help="项目定位")
+    p_update.add_argument("--path", default=None, help="项目文件夹")
+    p_update.set_defaults(func=cmd_project_update)
+
+    p_delete = p_sub.add_parser("delete", help="删除项目（含整个项目文件夹）")
+    p_delete.add_argument("name", help="项目 id")
+    p_delete.add_argument("--yes", action="store_true", help="确认删除（不可恢复）")
+    p_delete.set_defaults(func=cmd_project_delete)
+
+
+def _register_skills_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("skills", help="技能仓库")
+    p_sub = p.add_subparsers(dest="skills_command", required=True)
+    p_list = p_sub.add_parser("list", help="列出已注册技能")
+    p_list.set_defaults(func=cmd_skills_list)
+
+
+def _register_mcp_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("mcp", help="MCP 服务注册表")
+    p_sub = p.add_subparsers(dest="mcp_command", required=True)
+    p_list = p_sub.add_parser("list", help="列出已注册 MCP")
+    p_list.set_defaults(func=cmd_mcp_list)
+
+
+def _register_memory_parsers(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("memory", help="记忆中台")
+    p_sub = p.add_subparsers(dest="memory_command", required=True)
+
+    p_list = p_sub.add_parser("list", help="列出命名空间")
+    p_list.set_defaults(func=cmd_memory_list)
+
+    p_search = p_sub.add_parser("search", help="搜索记忆")
+    p_search.add_argument("namespace", help="命名空间：project（当前项目）或 project/{项目id}")
+    p_search.add_argument("query", help="关键词")
+    p_search.add_argument("--project", default=None)
+    p_search.add_argument("--position", default="laowang", help="以何岗位身份查询")
+    p_search.add_argument("--limit", type=int, default=10)
+    p_search.set_defaults(func=cmd_memory_search)
+
+    p_upsert = p_sub.add_parser("upsert", help="写入记忆")
+    p_upsert.add_argument("namespace", help="命名空间：project（当前项目）或 project/{项目id}")
+    p_upsert.add_argument("key", help="键")
+    p_upsert.add_argument("--text", default="", help="正文")
+    p_upsert.add_argument("--file", default=None, help="从文件读取正文")
+    p_upsert.add_argument("--project", default=None)
+    p_upsert.add_argument("--position", default="laowang", help="以何岗位身份写入")
+    p_upsert.set_defaults(func=cmd_memory_upsert)
+
+
+def _register_org_parsers(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("org", help="组织树编辑")
+    p_sub = p.add_subparsers(dest="org_command", required=True)
+
+    p_show = p_sub.add_parser("show", help="显示组织树")
+    p_show.add_argument("--project", default=None)
+    p_show.set_defaults(func=cmd_org_show)
+
+    p_add = p_sub.add_parser("add", help="添加岗位")
+    p_add.add_argument("role", help="岗位 id，如 xiaomo")
+    p_add.add_argument("--parent", default=None, help="上级 id")
+    p_add.add_argument("--project", default=None)
+    p_add.set_defaults(func=cmd_org_add)
+
+    p_move = p_sub.add_parser("move", help="移动岗位")
+    p_move.add_argument("node", help="要移动的岗位 id")
+    p_move.add_argument("parent", help="新上级 id")
+    p_move.add_argument("--project", default=None)
+    p_move.set_defaults(func=cmd_org_move)
+
+    p_rm = p_sub.add_parser("remove", help="删除岗位")
+    p_rm.add_argument("node", help="岗位 id")
+    p_rm.add_argument("--strategy", default="reassign_to_parent",
+                      choices=["reassign_to_parent", "promote_children", "archive"])
+    p_rm.add_argument("--project", default=None)
+    p_rm.set_defaults(func=cmd_org_remove)
+
+
+def _register_expand_parsers(sub: argparse._SubParsersAction) -> None:
+    p_expand = sub.add_parser("expand", help="扩建公司（交互式或子命令）")
+    p_expand.add_argument("--project", default=None)
+    p_sub = p_expand.add_subparsers(dest="expand_command")
+
+    p_biz = p_sub.add_parser("business", help="开新业务线")
+    p_biz.add_argument("description", nargs="?", default=None, help="业务描述")
+    p_biz.add_argument("--template", default=None)
+    p_biz.add_argument("--yes", action="store_true", help="确认新增")
+    p_biz.add_argument("--project", default=None)
+    p_biz.set_defaults(func=cmd_expand_business)
+
+    p_role = p_sub.add_parser("role", help="部门内加人")
+    p_role.add_argument("role", help="岗位 id")
+    p_role.add_argument("--parent", default=None)
+    p_role.add_argument("--project", default=None)
+    p_role.set_defaults(func=cmd_expand_role)
+
+    p_mgr = p_sub.add_parser("manager", help="插入管理层")
+    p_mgr.add_argument("--id", required=True, dest="id", help="新主管 id")
+    p_mgr.add_argument("--name", default=None)
+    p_mgr.add_argument("--title", default="组长")
+    p_mgr.add_argument("--reports-to", required=True, dest="reports_to")
+    p_mgr.add_argument("--children", required=True, help="下属 id，逗号分隔")
+    p_mgr.add_argument("--agent", default="opencode")
+    p_mgr.add_argument("--model", default="deepseek-v4-pro")
+    p_mgr.add_argument("--project", default=None)
+    p_mgr.set_defaults(func=cmd_expand_manager)
+
+    p_expand.set_defaults(func=cmd_expand_interactive)
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Windows GBK 终端无法输出中文/Unicode，强制 stdout/stderr 使用 UTF-8
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name)
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() not in ("utf-8", "utf8"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     argv = argv if argv is not None else sys.argv[1:]
     # 无参数 → TUI
     if not argv:

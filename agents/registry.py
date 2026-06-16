@@ -81,6 +81,4 @@ def build_interactive_command(
         skills=skills or [],
         mcp_servers=mcp_servers or [],
     )
-    if hasattr(adapter, "build_interactive_command"):
-        return adapter.build_interactive_command(ctx)
-    return adapter.build_command(ctx)
+    return adapter.build_interactive_command(ctx)

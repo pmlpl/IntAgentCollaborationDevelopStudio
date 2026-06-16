@@ -14,23 +14,80 @@ STUDIO_TASK_REL = ".studio/STUDIO_TASK.md"
 HERMES_CONTEXT_REL = ".hermes.md"
 
 
-def format_task_prompt(description: str, *, task_id: str = "", role: str = "") -> str:
-    """生成写入 STUDIO_TASK.md 的任务说明（各 Agent 会话启动后读取）。"""
+def _deliver_json_template(task_id: str = "", role: str = "") -> str:
+    """Generate the DELIVER.json JSON template string."""
+    return (
+        f"{{\n"
+        f'  "task_id": "{task_id or "TASK_ID"}",\n'
+        f'  "assignee": "{role or "YOUR_ROLE_ID"}",\n'
+        f'  "status": "completed",\n'
+        f'  "summary": "What you built and how it works (English, 2-5 sentences)",\n'
+        f'  "files": ["path/to/main.py", "path/to/other.js"],\n'
+        f'  "run_command": "python main.py",\n'
+        f'  "run_ok": true\n'
+        f"}}"
+    )
+
+
+def format_task_prompt(description: str, *, task_id: str = "", role: str = "", assignee_id: str = "") -> str:
+    """Generate STUDIO_TASK.md prompt with DELIVER.json as the central requirement.
+
+    The prompt is structured so the agent CANNOT miss the delivery requirement:
+    - CRITICAL banner at the top (first thing the agent sees)
+    - Task description in the middle
+    - Step-by-step delivery checklist at the bottom (last thing before the agent acts)
+    """
     header_parts = []
     if role:
-        header_parts.append(f"【Studio · {role}】")
+        header_parts.append(f"Studio · {role}")
     if task_id:
-        header_parts.append(f"任务 {task_id}")
-    header = " ".join(header_parts) if header_parts else "【Studio 任务】"
+        header_parts.append(f"Task {task_id}")
+    header = " | ".join(header_parts) if header_parts else "Studio Task"
+    deliver_path = DELIVER_REL.as_posix()
+    # Use assignee_id (position ID like "xiaohong") if provided, otherwise fall back to role
+    deliver_assignee = assignee_id or role or "YOUR_ROLE_ID"
+    deliver_json = _deliver_json_template(task_id, deliver_assignee)
+
     return (
-        f"{header}\n{description.strip()}\n\n"
-        f"请在本目录开始实现。需要读写文件、运行命令时请直接操作。\n"
-        f"完成后必须：\n"
-        f"1. 本地运行验证（如 python main.py）\n"
-        f"2. 写入 {DELIVER_REL.as_posix()}，示例：\n"
-        f'{{"task_id":"{task_id or "任务ID"}","assignee":"岗位id","summary":"做了什么",'
-        f'"files":["main.py"],"run_command":"python main.py","run_ok":true}}\n'
-        f"3. 系统会自动交给主管验收运行结果。"
+        f"# {header}\n\n"
+        # ── CRITICAL: first thing the agent reads ──
+        f"## !! CRITICAL — READ THIS FIRST !!\n"
+        f"Your work is NOT complete until you write the delivery file.\n"
+        f"The system CANNOT detect that you finished unless you create `{deliver_path}`.\n"
+        f"If you skip this step, your work will be LOST — the pipeline will stall forever.\n\n"
+        # ── Task description ──
+        f"## Your Task\n"
+        f"{description.strip()}\n\n"
+        # ── Language policy ──
+        f"## Language Policy\n"
+        f"- Communicate in English with your tech lead and teammates\n"
+        f"- The tech lead summarizes final results to CEO in Chinese (中文)\n"
+        f"- Write all code comments, commit messages, and documentation in English\n\n"
+        # ── How to work ──
+        f"## How to Work\n"
+        f"- You are in an isolated git worktree. Read/write files and run commands directly.\n"
+        f"- Verify your work: run tests, start the app, check for errors.\n\n"
+        # ── DELIVER.json specification ──
+        f"## Delivery Protocol — YOUR FINAL STEP\n"
+        f"After you have implemented AND verified your work, create `{deliver_path}`:\n\n"
+        f"```json\n{deliver_json}\n```\n\n"
+        f"**Field descriptions:**\n"
+        f"- `task_id`: your assigned task ID (shown above)\n"
+        f"- `assignee`: your position/role ID\n"
+        f"- `status`: \"completed\" if successful, \"failed\" if blocked\n"
+        f"- `summary`: what you implemented (English, 2-5 sentences)\n"
+        f"- `files`: ALL files you created or modified (relative paths from worktree root)\n"
+        f"- `run_command`: the exact shell command to run/verify your work\n"
+        f"- `run_ok`: true if your `run_command` exited with code 0\n\n"
+        f"Once you write this file, the system auto-detects it, runs verification,\n"
+        f"and notifies your tech lead for review. Nothing else is needed.\n\n"
+        # ── FINAL CHECKLIST reminder at the very bottom ──
+        f"## Before You Consider Yourself Done\n"
+        f"- [ ] Did I implement the task described above?\n"
+        f"- [ ] Did I verify my work (run it, test it, check for errors)?\n"
+        f"- [ ] Did I write `{deliver_path}` with all required fields?\n\n"
+        f"If you checked all three boxes, you are done. If `{deliver_path}` is\n"
+        f"missing, YOU ARE NOT DONE. Write it now."
     )
 
 
@@ -123,21 +180,24 @@ def build_interactive_argv(
             text = _read_task_file_excerpt(worktree, rel, max_chars=8000)
             if not text.strip():
                 text = starter_fallback(interactive, rel_str)
+        text += _deliver_reminder()
         argv.extend([flag, text])
         argv.extend(flags_parts)
     elif mode == "run_interactive":
-        # OpenCode：run -i 仅传一条消息；勿在 -f 后再加 positional（会被当成文件路径）
+        # OpenCode: "run <message>" — positional message, no -i flag
         argv.extend(flags_parts)
         text = _read_task_file_excerpt(worktree, rel, max_chars=8000)
         if not text.strip():
             text = starter_fallback(interactive, rel_str)
-        argv.extend(["run", "-i", text])
+        text += _deliver_reminder()
+        argv.extend(["run", text])
     elif mode == "initial_prompt":
         argv.extend(flags_parts)
         flag = str(interactive.get("flag") or "--prompt")
         text = _read_task_file_excerpt(worktree, rel, max_chars=6000)
         if not text.strip():
             text = starter_fallback(interactive, rel_str)
+        text += _deliver_reminder()
         argv.extend([flag, text])
     else:
         # task_file_context：仅写 STUDIO_TASK.md，不自动发消息（旧行为）
@@ -150,6 +210,17 @@ def build_interactive_argv(
             argv.append(part)
 
     return prepare_subprocess_argv(argv, interactive=True)
+
+
+def _deliver_reminder() -> str:
+    """Short reminder appended to CLI-passed task text so the agent doesn't forget."""
+    deliver_path = DELIVER_REL.as_posix()
+    return (
+        f"\n\n---\n"
+        f"!! WHEN DONE: write {deliver_path} with task_id, assignee, status, "
+        f"summary, files, run_command, run_ok. "
+        f"Your work is invisible to the system until you do this. !!"
+    )
 
 
 def starter_fallback(interactive: dict[str, Any], rel_str: str) -> str:
@@ -180,10 +251,12 @@ def format_worker_task_prompt(
     *,
     task_id: str = "",
     role: str = "",
+    assignee_id: str = "",
 ) -> str:
-    """合并 CEO 澄清方案与子任务描述，写入 STUDIO_TASK.md。
+    """Merge CEO brief + sub-task description for STUDIO_TASK.md.
 
-    包含已完成兄弟任务的摘要（项目记忆），帮助新 Worker 快速了解上下文。
+    Includes completed sibling task summaries (project memory) so new workers
+    understand the context before starting.
     """
     sections: list[str] = []
     if project_dir is not None:
@@ -191,16 +264,16 @@ def format_worker_task_prompt(
 
         ceo_ctx = ceo_context_for_workers(project_dir)
         if ceo_ctx:
-            sections.append(f"## CEO 已确认总目标\n{ceo_ctx}")
+            sections.append(f"## CEO Confirmed Goal\n{ceo_ctx}")
 
-        # 累积已完成任务的摘要（项目记忆）
+        # Accumulate completed task summaries (project memory)
         completed = _load_completed_sibling_summaries(project_dir, task_id)
         if completed:
-            sections.append(f"## 团队已完成的工作\n{completed}")
+            sections.append(f"## Completed Work by Teammates\n{completed}")
 
-    sections.append(f"## 本子任务\n{subtask_description.strip()}")
+    sections.append(f"## Your Sub-task\n{subtask_description.strip()}")
     body = "\n\n".join(sections)
-    return format_task_prompt(body, task_id=task_id, role=role)
+    return format_task_prompt(body, task_id=task_id, role=role, assignee_id=assignee_id)
 
 
 def _load_completed_sibling_summaries(project_dir: Path, current_task_id: str) -> str:
@@ -245,11 +318,11 @@ def _load_completed_sibling_summaries(project_dir: Path, current_task_id: str) -
             pass
 
     if archived_summaries:
-        lines.append("已验收完成：")
+        lines.append("Approved & merged:")
         for tid, summary in archived_summaries[:5]:
             lines.append(f"  - {summary}")
     if delivery_summaries:
-        lines.append("已完成交付（待主管验收）：")
+        lines.append("Delivered (pending review):")
         for tid, summary in delivery_summaries[:5]:
             lines.append(f"  - {summary}")
 

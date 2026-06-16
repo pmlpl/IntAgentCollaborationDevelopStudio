@@ -189,3 +189,21 @@ def list_agents_for_ui(root: Path) -> list[tuple[str, str]]:
         label = meta.get("name") or aid
         items.append((aid, f"{label} ({aid})"))
     return items
+
+
+def agent_can_execute(root: Path, agent_id: str) -> tuple[bool, str]:
+    """检查 Agent 是否可以真正执行任务。
+
+    综合检查 CLI 可用性、启用状态、BYOK 策略。
+    返回 (can_execute, reason)。can_execute=False 时 reason 说明原因。
+    供 agent_worker / dispatcher 共用，避免各处重复相同的检查链。
+    """
+    if not agent_id:
+        return False, "未配置 Agent"
+    if not agent_available(root, agent_id):
+        return False, "CLI 命令不在 PATH 中"
+    if not agent_enabled(root, agent_id):
+        return False, "已被用户禁用"
+    if not agent_allowed(root, agent_id):
+        return False, "当前 BYOK 策略不允许"
+    return True, "ok"
