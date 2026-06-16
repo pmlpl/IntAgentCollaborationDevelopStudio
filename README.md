@@ -120,18 +120,20 @@ pending → assigned → in_progress → submitted → in_review → approved/ar
 ## 运行测试
 
 ```bash
-pytest                                    # 全部 164 个测试
+pytest                                    # 全部 206 个测试
 pytest -k "research" -v                   # 按模式筛选
 pytest --cov=core --cov=agents --cov=cli  # 覆盖率
 ```
 
 ---
 
-## 当前版本: v0.1.0
+## 当前版本: v0.2.0
 
-**已实现：** 项目初始化、任务编排 (mock + 真实)、组织树 CRUD、TUI 指挥舱、Agent 自动化、项目记忆累积、审查过期重试、依赖自动解除。
+**v0.2.0 亮点：** 真实 Agent 端到端闭环已验证——CEO 下命令 → Hermes 主管拆解 → Worker 在隔离 worktree 执行 → DELIVER.json 交付 → 主管审查 → 依赖链自动解除 → 归档。学生管理系统拆解产出 FastAPI+PostgreSQL+Vue3+Pinia+Tailwind+pytest 子任务。
 
-**下一版本 v0.2.0 将包含：** Agent 会话持久化（inbox watcher 复用终端）、向量记忆检索 (ChromaDB)、MCP Gateway 真实连接池、web_search 真实调研。
+**已实现：** 项目初始化、任务编排（mock + 真实 Agent 闭环，Hermes 验证通过）、组织树 CRUD + 三层扩建、TUI 指挥舱、Agent 自动化、项目记忆累积、审查过期重试、依赖自动解除、Agent 会话持久化（inbox watcher 复用终端）、向量记忆检索 (ChromaDB)、MCP Gateway 连接池、per-worker mock 降级、Hermes ANSI/TUI 输出解析。
+
+**下一版本 v0.3.0 将包含：** Worker 交互式终端端到端验证、多 Agent 并行 + merge 冲突处理、真实审查 Agent 代码质量检查、`studio task` CLI 混合模式（真实主管 + mock Worker）。
 
 ---
 
